@@ -70,6 +70,19 @@ def parse_args() -> argparse.Namespace:
         help='Evaluate model performance'
     )
     
+    parser.add_argument(
+        '--test-mode',
+        action='store_true',
+        help='Run in test mode with reduced dataset (last 2 seasons only)'
+    )
+    
+    parser.add_argument(
+        '--test-size',
+        type=float,
+        default=0.2,
+        help='Fraction of data to use in test mode (default: 0.2, i.e., 20%% of the data)'
+    )
+    
     return parser.parse_args()
 
 def main() -> None:
@@ -101,6 +114,30 @@ def main() -> None:
         logger.info("Loading data...")
         train_data, test_data = data_loader.load_data()
         
+        if args.test_mode:
+            logger.info("Running in test mode with reduced dataset...")
+            # Get unique seasons
+            seasons = sorted(train_data['Season'].unique())
+            
+            if len(seasons) > 2:
+                # Use only the last 2 seasons for test mode
+                test_seasons = seasons[-2:]
+                logger.info(f"Using only seasons: {test_seasons}")
+                
+                # Filter data for test seasons
+                train_data = train_data[train_data['Season'].isin(test_seasons)]
+                test_data = test_data[test_data['Season'] >= test_seasons[0]]
+                
+                # Further reduce data size if specified
+                if args.test_size < 1.0:
+                    train_size = int(len(train_data) * args.test_size)
+                    test_size = int(len(test_data) * args.test_size)
+                    
+                    train_data = train_data.sample(n=train_size, random_state=42)
+                    test_data = test_data.sample(n=test_size, random_state=42)
+                    
+                    logger.info(f"Reduced dataset size - Train: {len(train_data)}, Test: {len(test_data)}")
+        
         # Create features
         logger.info("Engineering features...")
         train_data = feature_engineer.create_features(train_data, is_training=True)
@@ -109,7 +146,7 @@ def main() -> None:
         if args.train:
             # Train models
             logger.info("Training models...")
-            metrics = predictor.train(train_data, save_path=config.models_dir)
+            metrics = predictor.train(train_data, save_path=config.models_dir, test_mode=args.test_mode)
             logger.info("Training metrics: %s", metrics)
         else:
             # Load existing models

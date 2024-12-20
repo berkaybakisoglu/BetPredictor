@@ -6,8 +6,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
+import logging
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.config.config import BettingConfig
+
+logger = logging.getLogger(__name__)
 
 class BettingEvaluator:
     """Evaluates betting performance across markets."""
@@ -20,41 +24,182 @@ class BettingEvaluator:
             market: 0.0 for market in self.config.market_loss_limits
         }
     
-    def evaluate_predictions(self, predictions: Dict[str, pd.DataFrame], 
-                           results: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-        """Evaluate predictions and simulate betting.
-        
-        Args:
-            predictions: Dictionary of predictions for each market
-            results: DataFrame with actual results
-            
-        Returns:
-            Dictionary with performance metrics
-        """
+    def evaluate_predictions(self, predictions: Dict[str, pd.DataFrame], test_data: pd.DataFrame) -> Dict[str, Dict]:
+        """Evaluate predictions across all markets."""
         metrics = {}
         
-        for market, preds in predictions.items():
-            market_metrics = self._evaluate_market(market, preds, results)
-            metrics[market] = market_metrics
+        logger.info("\n" + "="*50)
+        logger.info("PREDICTION ACCURACY METRICS")
+        logger.info("="*50)
+        
+        for market in predictions:
+            metrics[market] = {}
             
-            # Update market P&L
-            self.market_pnl[market] += market_metrics['pnl']
-            
-            # Check market-specific stop loss
-            if (self.market_pnl[market] < 
-                -self.config.market_loss_limits[market] * self.config.initial_bankroll):
-                print(f"\nWarning: {market} market reached stop loss limit")
+            if market == 'match_result':
+                # Calculate pure prediction accuracy
+                y_true = test_data['FTR']
+                y_pred = predictions[market]['Predicted']
+                correct_predictions = (y_pred == y_true).sum()
+                total_predictions = len(y_true)
+                accuracy = correct_predictions / total_predictions
                 
+                # Log detailed predictions
+                logger.info("\nDetailed Match Result Predictions:")
+                logger.info("=" * 100)
+                logger.info(f"{'Date':<12} {'Home':<20} {'Away':<20} {'Score':<8} {'Pred':<6} {'Actual':<6} {'Odds':<6} {'Conf':<6}")
+                logger.info("-" * 100)
+                
+                for idx, row in predictions[market].iterrows():
+                    actual = test_data.loc[idx, 'FTR']
+                    date = test_data.loc[idx, 'Date'].strftime('%Y-%m-%d')
+                    home_team = test_data.loc[idx, 'HomeTeam']
+                    away_team = test_data.loc[idx, 'AwayTeam']
+                    score = f"{test_data.loc[idx, 'FTHG']}-{test_data.loc[idx, 'FTAG']}"
+                    pred = row['Predicted']
+                    confidence = row['Confidence']
+                    
+                    # Get corresponding odds
+                    if pred == 'H':
+                        odds = row['B365H']
+                    elif pred == 'D':
+                        odds = row['B365D']
+                    else:
+                        odds = row['B365A']
+                    
+                    logger.info(f"{date:<12} {home_team:<20} {away_team:<20} {score:<8} {pred:<6} {actual:<6} {odds:<6.2f} {confidence:<6.2f}")
+                    
+                    if pred == actual:
+                        logger.info(f"✓ Correct prediction! Odds: {odds:.2f}, Profit: {odds - 1:.2f}")
+                    else:
+                        logger.info(f"✗ Wrong prediction. Loss: -1.00")
+                    logger.info("-" * 100)
+                
+                # Log aggregate metrics
+                logger.info(f"\nMatch Result Accuracy:")
+                logger.info(f"Total Predictions: {total_predictions}")
+                logger.info(f"Correct Predictions: {correct_predictions}")
+                logger.info(f"Accuracy: {accuracy:.2%}")
+                
+                metrics[market]['prediction_accuracy'] = accuracy
+                
+            elif market == 'over_under':
+                # Calculate over/under prediction accuracy
+                y_true = (test_data['FTHG'] + test_data['FTAG'] > 2.5).astype(int)
+                y_pred = (predictions[market]['Over_Prob'] > 0.5).astype(int)
+                correct_predictions = (y_pred == y_true).sum()
+                total_predictions = len(y_true)
+                accuracy = correct_predictions / total_predictions
+                
+                # Log detailed predictions
+                logger.info("\nDetailed Over/Under Predictions:")
+                logger.info("=" * 100)
+                logger.info(f"{'Date':<12} {'Home':<20} {'Away':<20} {'Score':<8} {'Goals':<6} {'Pred':<6} {'Actual':<6} {'Odds':<6} {'Conf':<6}")
+                logger.info("-" * 100)
+                
+                for idx, row in predictions[market].iterrows():
+                    date = test_data.loc[idx, 'Date'].strftime('%Y-%m-%d')
+                    home_team = test_data.loc[idx, 'HomeTeam']
+                    away_team = test_data.loc[idx, 'AwayTeam']
+                    total_goals = test_data.loc[idx, 'FTHG'] + test_data.loc[idx, 'FTAG']
+                    score = f"{test_data.loc[idx, 'FTHG']}-{test_data.loc[idx, 'FTAG']}"
+                    pred = 'Over' if row['Over_Prob'] > 0.5 else 'Under'
+                    actual = 'Over' if total_goals > 2.5 else 'Under'
+                    confidence = max(row['Over_Prob'], 1 - row['Over_Prob'])
+                    odds = row['B365>2.5'] if pred == 'Over' else row['B365<2.5']
+                    
+                    logger.info(f"{date:<12} {home_team:<20} {away_team:<20} {score:<8} {total_goals:<6} {pred:<6} {actual:<6} {odds:<6.2f} {confidence:<6.2f}")
+                    
+                    if pred == actual:
+                        logger.info(f"✓ Correct prediction! Odds: {odds:.2f}, Profit: {odds - 1:.2f}")
+                    else:
+                        logger.info(f"✗ Wrong prediction. Loss: -1.00")
+                    logger.info("-" * 100)
+                
+                # Log aggregate metrics
+                logger.info(f"\nOver/Under Accuracy:")
+                logger.info(f"Total Predictions: {total_predictions}")
+                logger.info(f"Correct Predictions: {correct_predictions}")
+                logger.info(f"Accuracy: {accuracy:.2%}")
+                
+                metrics[market]['prediction_accuracy'] = accuracy
+                
+            elif market in ['corners', 'cards']:
+                # Calculate regression accuracy metrics
+                y_true = test_data['HC'] + test_data['AC'] if market == 'corners' else test_data['HY'] + test_data['AY']
+                y_pred = predictions[market]['prediction']
+                
+                mae = mean_absolute_error(y_true, y_pred)
+                mse = mean_squared_error(y_true, y_pred)
+                rmse = np.sqrt(mse)
+                
+                # Calculate percentage of predictions within different margins
+                margin_1 = np.mean(abs(y_true - y_pred) <= 1)
+                margin_2 = np.mean(abs(y_true - y_pred) <= 2)
+                margin_3 = np.mean(abs(y_true - y_pred) <= 3)
+                
+                # Log detailed predictions
+                logger.info(f"\nDetailed {market.title()} Predictions:")
+                logger.info("=" * 100)
+                logger.info(f"{'Date':<12} {'Home':<20} {'Away':<20} {'Score':<8} {'Pred':<8} {'Actual':<8} {'Diff':<8} {'Conf':<6}")
+                logger.info("-" * 100)
+                
+                for idx, row in predictions[market].iterrows():
+                    date = test_data.loc[idx, 'Date'].strftime('%Y-%m-%d')
+                    home_team = test_data.loc[idx, 'HomeTeam']
+                    away_team = test_data.loc[idx, 'AwayTeam']
+                    score = f"{test_data.loc[idx, 'FTHG']}-{test_data.loc[idx, 'FTAG']}"
+                    pred = row['prediction']
+                    actual = y_true[idx]
+                    diff = abs(pred - actual)
+                    confidence = row['confidence']
+                    
+                    logger.info(f"{date:<12} {home_team:<20} {away_team:<20} {score:<8} {pred:<8.1f} {actual:<8} {diff:<8.1f} {confidence:<6.2f}")
+                    
+                    margin = 1 if market == 'cards' else 2
+                    if diff <= margin:
+                        logger.info(f"✓ Good prediction! Predicted: {pred:.1f}, Actual: {actual}")
+                    else:
+                        logger.info(f"✗ Prediction off by {diff:.1f} {market}")
+                    logger.info("-" * 100)
+                
+                # Log aggregate metrics
+                logger.info(f"\n{market.title()} Prediction Accuracy:")
+                logger.info(f"Mean Absolute Error: {mae:.2f}")
+                logger.info(f"Root Mean Square Error: {rmse:.2f}")
+                logger.info(f"Within ±1 {market}: {margin_1:.2%}")
+                logger.info(f"Within ±2 {market}: {margin_2:.2%}")
+                logger.info(f"Within ±3 {market}: {margin_3:.2%}")
+                
+                metrics[market].update({
+                    'mae': mae,
+                    'rmse': rmse,
+                    'within_1': margin_1,
+                    'within_2': margin_2,
+                    'within_3': margin_3
+                })
+            
+            # Add betting performance metrics
+            betting_metrics = self._evaluate_market(predictions[market], test_data, market)
+            metrics[market].update(betting_metrics)
+            
+            if metrics[market].get('bets', 0) > 0:
+                logger.info(f"\n{market.upper()} Betting Performance:")
+                logger.info(f"Total Bets: {metrics[market]['bets']}")
+                logger.info(f"Wins: {metrics[market]['wins']}")
+                logger.info(f"Win Rate: {metrics[market]['win_rate']:.2%}")
+                logger.info(f"ROI: {metrics[market]['roi']:.2%}")
+                logger.info(f"P&L: {metrics[market]['pnl']:.2f}")
+                logger.info(f"Max Drawdown: {metrics[market]['max_drawdown']:.2f}")
+        
         return metrics
     
-    def _evaluate_market(self, market: str, predictions: pd.DataFrame,
-                        results: pd.DataFrame) -> Dict[str, float]:
+    def _evaluate_market(self, predictions: pd.DataFrame, test_data: pd.DataFrame, market: str) -> Dict[str, float]:
         """Evaluate predictions for a specific market.
         
         Args:
-            market: Market being evaluated
             predictions: Predictions for the market
-            results: Actual results
+            test_data: Actual results
+            market: Market being evaluated
             
         Returns:
             Dictionary with market-specific metrics
@@ -77,7 +222,7 @@ class BettingEvaluator:
             'FTHG', 'FTAG', 'HTHG', 'HTAG',
             'HC', 'AC', 'HY', 'AY'
         ]
-        bets = bets.merge(results[result_columns], 
+        bets = bets.merge(test_data[result_columns], 
                          on=['Date', 'HomeTeam', 'AwayTeam'])
         
         # Calculate bet outcomes
@@ -129,35 +274,46 @@ class BettingEvaluator:
         
         if market == 'match_result':
             for _, pred in predictions.iterrows():
-                # Check home win
-                if (pred['Home_Prob'] > threshold and 
-                    pred['B365H'] >= min_odds):
+                # Get highest probability and corresponding outcome
+                probs = {
+                    'Home': pred['Home_Prob'],
+                    'Draw': pred['Draw_Prob'],
+                    'Away': pred['Away_Prob']
+                }
+                best_outcome = max(probs.items(), key=lambda x: x[1])
+                
+                # Get corresponding odds
+                odds_map = {
+                    'Home': pred['B365H'],
+                    'Draw': pred['B365D'],
+                    'Away': pred['B365A']
+                }
+                
+                # Calculate value
+                value_map = {
+                    outcome: prob * odds_map[outcome]
+                    for outcome, prob in probs.items()
+                }
+                
+                # Only bet if we have both high confidence and good value
+                outcome, confidence = best_outcome
+                odds = odds_map[outcome]
+                value = value_map[outcome]
+                
+                if (confidence > threshold and 
+                    odds >= min_odds and 
+                    value > 1.1):  # Value threshold
+                    
                     bets.append({
                         'Date': pred['Date'],
                         'HomeTeam': pred['HomeTeam'],
                         'AwayTeam': pred['AwayTeam'],
                         'Market': market,
-                        'Bet': 'Home',
-                        'Confidence': pred['Home_Prob'],
-                        'Odds': pred['B365H'],
-                        'Stake': self._calculate_stake(pred['Home_Prob'], 
-                                                     pred['B365H'],
-                                                     max_stake_pct)
-                    })
-                # Check away win
-                elif (pred['Away_Prob'] > threshold and 
-                      pred['B365A'] >= min_odds):
-                    bets.append({
-                        'Date': pred['Date'],
-                        'HomeTeam': pred['HomeTeam'],
-                        'AwayTeam': pred['AwayTeam'],
-                        'Market': market,
-                        'Bet': 'Away',
-                        'Confidence': pred['Away_Prob'],
-                        'Odds': pred['B365A'],
-                        'Stake': self._calculate_stake(pred['Away_Prob'],
-                                                     pred['B365A'],
-                                                     max_stake_pct)
+                        'Bet': outcome,
+                        'Confidence': confidence,
+                        'Odds': odds,
+                        'Value': value,
+                        'Stake': self._calculate_stake(confidence, odds, max_stake_pct)
                     })
         
         elif market == 'over_under':
@@ -234,6 +390,7 @@ class BettingEvaluator:
         """
         if market == 'match_result':
             return ((bets['Bet'] == 'Home') & (bets['FTR'] == 'H') |
+                   (bets['Bet'] == 'Draw') & (bets['FTR'] == 'D') |
                    (bets['Bet'] == 'Away') & (bets['FTR'] == 'A'))
         elif market == 'over_under':
             total_goals = bets['FTHG'] + bets['FTAG']

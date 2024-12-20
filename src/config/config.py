@@ -41,7 +41,7 @@ class ModelConfig:
     markets: Dict[str, bool] = field(default_factory=lambda: {
         'match_result': True,
         'over_under': True,
-        'ht_score': True,
+        'ht_score': False,  # Disabled as not needed
         'corners': True,
         'cards': True,
         'ft_score': False  # Disabled due to poor performance
