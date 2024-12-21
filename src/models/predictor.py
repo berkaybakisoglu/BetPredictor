@@ -11,6 +11,10 @@ from sklearn.metrics import (
     mean_squared_error, mean_absolute_error, r2_score
 )
 import joblib
+from lightgbm import LGBMRegressor
+from src.config.config import ModelConfig
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +47,7 @@ class UnifiedPredictor:
         self.feature_importances: Dict[str, pd.DataFrame] = {}
     
     def _define_feature_sets(self) -> Dict[str, List[str]]:
-        """Define feature sets for each market.
-        
-        Returns:
-            Dictionary mapping market names to their required features
-        """
+        """Define feature sets for each market."""
         # Base features used by all markets
         base_features = [
             # Team performance metrics
@@ -63,11 +63,27 @@ class UnifiedPredictor:
             'Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb'
         ]
         
-        # Additional features for specific markets
+        # Enhanced corner features (only those we can reliably calculate)
         corner_features = [
+            # Basic corner stats
             'Home_Corners_For_Avg', 'Home_Corners_Against_Avg',
             'Away_Corners_For_Avg', 'Away_Corners_Against_Avg',
-            'H2H_Avg_Corners'
+            'H2H_Avg_Corners',
+            
+            # Recent form corner stats
+            'Home_Corners_For_Last5', 'Home_Corners_Against_Last5',
+            'Away_Corners_For_Last5', 'Away_Corners_Against_Last5',
+            
+            # Corner differentials
+            'Home_Corner_Diff_Avg',  # Corners For - Against
+            'Away_Corner_Diff_Avg',
+            
+            # Home/Away specific performance
+            'Home_Corners_For_Last3', 'Home_Corners_Against_Last3',
+            'Away_Corners_For_Last3', 'Away_Corners_Against_Last3',
+            
+            # Consistency metrics
+            'Home_Corner_Std', 'Away_Corner_Std'
         ]
         
         card_features = [
@@ -149,14 +165,30 @@ class UnifiedPredictor:
         Returns:
             Dictionary of metrics
         """
-        # Initialize model
-        self.regression_models[market] = RandomForestRegressor(
-            n_estimators=200,
-            max_depth=15,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            random_state=42
-        )
+        if market == 'corners':
+            # Use LightGBM for corners prediction
+            # Initialize model with optimized parameters
+            self.regression_models[market] = LGBMRegressor(
+                n_estimators=500,
+                learning_rate=0.01,
+                num_leaves=31,
+                max_depth=8,
+                min_child_samples=20,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.1,
+                reg_lambda=0.1,
+                random_state=42
+            )
+        else:
+            # Use Random Forest for other regression tasks
+            self.regression_models[market] = RandomForestRegressor(
+                n_estimators=200,
+                max_depth=15,
+                min_samples_split=10,
+                min_samples_leaf=5,
+                random_state=42
+            )
         
         # Train model
         self.regression_models[market].fit(X_train, y_train)
@@ -173,9 +205,14 @@ class UnifiedPredictor:
         }
         
         # Calculate feature importance
+        if isinstance(self.regression_models[market], LGBMRegressor):
+            importance = self.regression_models[market].feature_importances_
+        else:
+            importance = self.regression_models[market].feature_importances_
+            
         self.feature_importances[market] = pd.DataFrame({
             'feature': feature_names,
-            'importance': self.regression_models[market].feature_importances_
+            'importance': importance
         }).sort_values('importance', ascending=False)
         
         return metrics
@@ -262,6 +299,247 @@ class UnifiedPredictor:
         for _, row in self.feature_importances[market].head(10).iterrows():
             logger.info(f"- {row['feature']}: {row['importance']:.4f}")
     
+    def _analyze_seasonal_progression(self, df: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, market: str) -> Dict[str, List[float]]:
+        """Analyze how prediction accuracy changes as season progresses.
+        
+        Args:
+            df: DataFrame with match information
+            y_true: True values
+            y_pred: Predicted values
+            market: Market being analyzed
+            
+        Returns:
+            Dictionary with match number and corresponding accuracies
+        """
+        # Create DataFrame with predictions and actual results
+        analysis_df = pd.DataFrame({
+            'Date': df['Date'],
+            'Season': df['Season'],
+            'HomeTeam': df['HomeTeam'],
+            'True': y_true,
+            'Pred': y_pred
+        })
+        
+        # Sort by date to ensure chronological order
+        analysis_df = analysis_df.sort_values('Date')
+        
+        # Add match number in season for each team
+        analysis_df['Match_Number'] = analysis_df.groupby(['Season', 'HomeTeam']).cumcount() + 1
+        
+        # Calculate accuracy for each match number
+        match_accuracies = {}
+        max_matches = analysis_df['Match_Number'].max()
+        
+        for match_num in range(1, max_matches + 1):
+            matches_at_num = analysis_df[analysis_df['Match_Number'] == match_num]
+            if len(matches_at_num) > 0:
+                if market in ['corners', 'cards']:
+                    # For regression tasks, calculate RMSE
+                    accuracy = np.sqrt(mean_squared_error(
+                        matches_at_num['True'],
+                        matches_at_num['Pred']
+                    ))
+                else:
+                    # For classification tasks, calculate accuracy
+                    accuracy = accuracy_score(
+                        matches_at_num['True'],
+                        matches_at_num['Pred']
+                    )
+                match_accuracies[match_num] = accuracy
+        
+        return match_accuracies
+    
+    def _plot_seasonal_progression(self, seasonal_progression: Dict[str, Dict[int, float]], save_path: Optional[Path] = None) -> None:
+        """Create plots showing how prediction accuracy changes throughout the season.
+        
+        Args:
+            seasonal_progression: Dictionary with match numbers and accuracies
+            save_path: Optional path to save plots
+        """
+        # Use a built-in style
+        plt.style.use('bmh')  # Alternative clean style
+        
+        # Set up the figure with a light gray background
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12), facecolor='#f0f0f0')
+        fig.suptitle('Prediction Performance Throughout Season', fontsize=16, y=1.02)
+        
+        # Flatten axes for easier iteration
+        axes = axes.flatten()
+        
+        # Define colors for better visibility
+        line_color = '#2F5373'
+        trend_color = '#C44E52'
+        
+        for idx, market in enumerate(seasonal_progression.keys()):
+            ax = axes[idx]
+            match_numbers = list(seasonal_progression[market].keys())
+            accuracies = list(seasonal_progression[market].values())
+            
+            # Create line plot with custom styling
+            ax.plot(match_numbers, accuracies, marker='o', linewidth=2, markersize=6,
+                   color=line_color, markerfacecolor='white', markeredgecolor=line_color)
+            
+            # Add trend line
+            z = np.polyfit(match_numbers, accuracies, 1)
+            p = np.poly1d(z)
+            ax.plot(match_numbers, p(match_numbers), linestyle='--', color=trend_color,
+                   alpha=0.8, label='Trend', linewidth=2)
+            
+            # Customize plot
+            metric_name = "RMSE" if market in ['corners', 'cards'] else "Accuracy"
+            ax.set_title(f'{market.upper()} {metric_name} by Match Number', 
+                        fontsize=12, pad=10)
+            ax.set_xlabel('Match Number in Season', fontsize=10)
+            ax.set_ylabel(metric_name, fontsize=10)
+            
+            # Customize grid
+            ax.grid(True, linestyle='--', alpha=0.3)
+            ax.set_axisbelow(True)  # Put grid behind data
+            
+            # Add legend with custom styling
+            ax.legend(['Actual', 'Trend'], frameon=True, facecolor='white', edgecolor='none')
+            
+            # For RMSE (lower is better), invert y-axis
+            if market in ['corners', 'cards']:
+                ax.invert_yaxis()
+            
+            # Add annotations with improved styling
+            ax.annotate(f'Start: {accuracies[0]:.3f}', 
+                       xy=(match_numbers[0], accuracies[0]),
+                       xytext=(10, 10), textcoords='offset points',
+                       bbox=dict(facecolor='white', edgecolor='none', alpha=0.8))
+            ax.annotate(f'End: {accuracies[-1]:.3f}',
+                       xy=(match_numbers[-1], accuracies[-1]),
+                       xytext=(-10, 10), textcoords='offset points',
+                       ha='right',
+                       bbox=dict(facecolor='white', edgecolor='none', alpha=0.8))
+            
+            # Set background color
+            ax.set_facecolor('white')
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save or show plot
+        if save_path:
+            save_path.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path / 'seasonal_progression.png', 
+                       dpi=300, bbox_inches='tight',
+                       facecolor='white')
+        else:
+            plt.show()
+        
+        plt.close()
+    
+    def _analyze_league_performance(self, df: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, market: str) -> Dict[str, float]:
+        """Analyze prediction performance for each league.
+        
+        Args:
+            df: DataFrame with match information
+            y_true: True values
+            y_pred: Predicted values
+            market: Market being analyzed
+            
+        Returns:
+            Dictionary with league names and corresponding accuracies
+        """
+        # Create DataFrame with predictions and actual results
+        analysis_df = pd.DataFrame({
+            'League': df['League'],
+            'True': y_true,
+            'Pred': y_pred
+        })
+        
+        # Calculate accuracy for each league
+        league_accuracies = {}
+        for league in analysis_df['League'].unique():
+            league_data = analysis_df[analysis_df['League'] == league]
+            if len(league_data) > 0:
+                if market in ['corners', 'cards']:
+                    # For regression tasks, calculate RMSE
+                    accuracy = np.sqrt(mean_squared_error(
+                        league_data['True'],
+                        league_data['Pred']
+                    ))
+                else:
+                    # For classification tasks, calculate accuracy
+                    accuracy = accuracy_score(
+                        league_data['True'],
+                        league_data['Pred']
+                    )
+                league_accuracies[league] = accuracy
+        
+        return league_accuracies
+
+    def _plot_league_performance(self, league_performance: Dict[str, Dict[str, float]], save_path: Optional[Path] = None) -> None:
+        """Create plots showing prediction performance by league.
+        
+        Args:
+            league_performance: Dictionary with leagues and accuracies for each market
+            save_path: Optional path to save plots
+        """
+        plt.style.use('bmh')
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12), facecolor='#f0f0f0')
+        fig.suptitle('Prediction Performance by League', fontsize=16, y=1.02)
+        
+        # Flatten axes for easier iteration
+        axes = axes.flatten()
+        
+        # Color palette for bars
+        colors = plt.cm.Set3(np.linspace(0, 1, 10))
+        
+        for idx, (market, league_accuracies) in enumerate(league_performance.items()):
+            ax = axes[idx]
+            
+            # Sort leagues by performance
+            sorted_leagues = sorted(league_accuracies.items(), key=lambda x: x[1], reverse=True)
+            leagues, accuracies = zip(*sorted_leagues)
+            
+            # Create bar plot
+            bars = ax.bar(range(len(leagues)), accuracies, color=colors)
+            
+            # Customize plot
+            metric_name = "RMSE" if market in ['corners', 'cards'] else "Accuracy"
+            ax.set_title(f'{market.upper()} {metric_name} by League', fontsize=12, pad=10)
+            ax.set_xlabel('League', fontsize=10)
+            ax.set_ylabel(metric_name, fontsize=10)
+            
+            # Rotate x-axis labels for better readability
+            ax.set_xticks(range(len(leagues)))
+            ax.set_xticklabels(leagues, rotation=45, ha='right')
+            
+            # Add value labels on top of bars
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height:.3f}',
+                       ha='center', va='bottom')
+            
+            # Customize grid
+            ax.grid(True, linestyle='--', alpha=0.3)
+            ax.set_axisbelow(True)
+            
+            # For RMSE (lower is better), invert y-axis
+            if market in ['corners', 'cards']:
+                ax.invert_yaxis()
+            
+            # Set background color
+            ax.set_facecolor('white')
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save or show plot
+        if save_path:
+            save_path.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path / 'league_performance.png', 
+                       dpi=300, bbox_inches='tight',
+                       facecolor='white')
+        else:
+            plt.show()
+        
+        plt.close()
+    
     def train(self, df: pd.DataFrame, save_path: Optional[Path] = None, test_mode: bool = False) -> Dict[str, Dict[str, float]]:
         """Train models for all enabled markets using time-series validation.
         
@@ -274,6 +552,9 @@ class UnifiedPredictor:
             Dictionary with performance metrics for each market
         """
         metrics = {}
+        all_feature_importances = {}
+        seasonal_progression = {}
+        league_performance = {}
         logger = logging.getLogger(__name__)
         
         # Sort by date and validate seasons
@@ -297,10 +578,6 @@ class UnifiedPredictor:
                 logger.info(f"Skipping {market} market (disabled in config)")
                 continue
             
-            logger.info(f"\n{'='*50}")
-            logger.info(f"Training {market} model...")
-            logger.info(f"{'='*50}")
-            
             try:
                 # Prepare data
                 X_train, X_test, y_train, y_test, feature_names = self._prepare_training_data(
@@ -312,21 +589,89 @@ class UnifiedPredictor:
                     metrics[market] = self._train_regression_model(
                         market, X_train, X_test, y_train, y_test, feature_names
                     )
+                    # Get predictions for seasonal progression analysis
+                    y_pred = self.regression_models[market].predict(X_test)
                 else:
                     metrics[market] = self._train_classification_model(
                         market, X_train, X_test, y_train, y_test, feature_names
                     )
+                    # Get predictions for seasonal progression analysis
+                    y_pred = self.models[market].predict(X_test)
+                
+                # Analyze seasonal progression
+                test_df = df[df['Season'] == test_season]
+                seasonal_progression[market] = self._analyze_seasonal_progression(
+                    test_df, y_test, y_pred, market
+                )
+                
+                # Analyze league performance
+                test_df = df[df['Season'] == test_season]
+                league_performance[market] = self._analyze_league_performance(
+                    test_df, y_test, y_pred, market
+                )
                 
                 # Save model if path provided
                 if save_path:
                     self._save_model(market, save_path)
                 
-                # Log results
-                self._log_results(market, metrics[market])
+                # Store feature importances for later
+                all_feature_importances[market] = self.feature_importances[market].head(10)
                 
             except Exception as e:
                 logger.error(f"Error training {market} model: {str(e)}", exc_info=True)
                 continue
+        
+        # Log consolidated metrics at the end
+        logger.info("\n" + "="*50)
+        logger.info("TRAINING RESULTS SUMMARY")
+        logger.info("="*50)
+        
+        for market in metrics:
+            logger.info(f"\n{market.upper()} METRICS:")
+            for metric, value in metrics[market].items():
+                logger.info(f"- {metric}: {value:.4f}")
+        
+        logger.info("\n" + "="*50)
+        logger.info("TOP FEATURE IMPORTANCES")
+        logger.info("="*50)
+        
+        for market in all_feature_importances:
+            logger.info(f"\n{market.upper()} TOP 10 FEATURES:")
+            for _, row in all_feature_importances[market].iterrows():
+                logger.info(f"- {row['feature']}: {row['importance']:.4f}")
+        
+        logger.info("\n" + "="*50)
+        logger.info("SEASONAL PROGRESSION ANALYSIS")
+        logger.info("="*50)
+        
+        for market in seasonal_progression:
+            logger.info(f"\n{market.upper()} ACCURACY BY MATCH NUMBER:")
+            for match_num, accuracy in seasonal_progression[market].items():
+                metric_name = "RMSE" if market in ['corners', 'cards'] else "Accuracy"
+                logger.info(f"Match {match_num}: {metric_name} = {accuracy:.4f}")
+        
+        logger.info("\n" + "="*50)
+        logger.info("LEAGUE PERFORMANCE ANALYSIS")
+        logger.info("="*50)
+        
+        for market in league_performance:
+            logger.info(f"\n{market.upper()} PERFORMANCE BY LEAGUE:")
+            metric_name = "RMSE" if market in ['corners', 'cards'] else "Accuracy"
+            for league, accuracy in sorted(league_performance[market].items(), 
+                                        key=lambda x: x[1], 
+                                        reverse=market not in ['corners', 'cards']):
+                logger.info(f"{league}: {metric_name} = {accuracy:.4f}")
+        
+        # Create and save visualization
+        logger.info("\nCreating seasonal progression visualization...")
+        self._plot_seasonal_progression(seasonal_progression, save_path)
+        if save_path:
+            logger.info(f"Saved seasonal progression plot to {save_path}/seasonal_progression.png")
+        
+        logger.info("\nCreating league performance visualization...")
+        self._plot_league_performance(league_performance, save_path)
+        if save_path:
+            logger.info(f"Saved league performance plot to {save_path}/league_performance.png")
         
         return metrics
     
@@ -468,7 +813,7 @@ class UnifiedPredictor:
             
             return predictions
         elif market == 'over_under':
-            return pd.DataFrame({
+            predictions = pd.DataFrame({
                 'Date': df['Date'],
                 'HomeTeam': df['HomeTeam'],
                 'AwayTeam': df['AwayTeam'],
@@ -477,6 +822,21 @@ class UnifiedPredictor:
                 'B365<2.5': df['B365<2.5'],
                 'B365>2.5': df['B365>2.5']
             })
+            
+            # Add predicted outcome based on highest probability
+            predictions['Predicted'] = predictions[['Under_Prob', 'Over_Prob']].idxmax(axis=1).map({
+                'Under_Prob': 'Under',
+                'Over_Prob': 'Over'
+            })
+            
+            # Add confidence (highest probability)
+            predictions['Confidence'] = predictions[['Under_Prob', 'Over_Prob']].max(axis=1)
+            
+            # Add value indicators
+            predictions['Under_Value'] = predictions['Under_Prob'] * df['B365<2.5']
+            predictions['Over_Value'] = predictions['Over_Prob'] * df['B365>2.5']
+            
+            return predictions
         elif market == 'ht_score':
             return pd.DataFrame({
                 'Date': df['Date'],
@@ -499,18 +859,38 @@ class UnifiedPredictor:
             raise ValueError(f"Unknown market: {market}") 
     
     def _get_prediction_confidence(self, market: str, X_scaled: np.ndarray) -> np.ndarray:
-        """Calculate prediction confidence using tree variance."""
+        """Calculate prediction confidence based on model type."""
         if market not in self.regression_models:
             return np.zeros(len(X_scaled))
         
-        # Get predictions from all trees
-        trees = self.regression_models[market].estimators_
-        tree_preds = np.array([tree.predict(X_scaled) for tree in trees])
+        model = self.regression_models[market]
         
-        # Calculate standard deviation across trees (lower std = higher confidence)
-        std = np.std(tree_preds, axis=0)
-        max_std = np.max(std)
+        if hasattr(model, 'estimators_'):  # RandomForest
+            # Get predictions from all trees
+            trees = model.estimators_
+            tree_preds = np.array([tree.predict(X_scaled) for tree in trees])
+            
+            # Calculate standard deviation across trees (lower std = higher confidence)
+            std = np.std(tree_preds, axis=0)
+            max_std = np.max(std) if len(std) > 0 else 1
+            
+            # Convert to confidence score (1 - normalized std)
+            confidence = 1 - (std / max_std)
+            
+        else:  # LightGBM
+            # For LightGBM, we'll use the prediction standard deviation
+            # from built-in method if available, otherwise return uniform confidence
+            try:
+                # Make predictions with standard deviation
+                pred_mean = model.predict(X_scaled)
+                
+                # Calculate relative deviation from mean as confidence
+                abs_dev = np.abs(pred_mean - np.mean(pred_mean))
+                max_dev = np.max(abs_dev) if len(abs_dev) > 0 else 1
+                confidence = 1 - (abs_dev / max_dev)
+                
+            except Exception as e:
+                logger.warning(f"Could not calculate confidence for LightGBM model: {str(e)}")
+                confidence = np.ones(len(X_scaled)) * 0.5  # Default medium confidence
         
-        # Convert to confidence score (1 - normalized std)
-        confidence = 1 - (std / max_std)
-        return confidence 
+        return confidence

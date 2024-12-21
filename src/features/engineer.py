@@ -40,7 +40,22 @@ class FeatureEngineer:
                 'Form_Diff': 0.0, 
                 'Home_Form': 0.0, 
                 'Away_Form': 0.0,
-                'General_Form': 0.0
+                'General_Form': 0.0,
+                # Corner-related features
+                'Home_Corners_For_Last5_Avg': 0.0,
+                'Home_Corners_Against_Last5_Avg': 0.0,
+                'Away_Corners_For_Last5_Avg': 0.0,
+                'Away_Corners_Against_Last5_Avg': 0.0,
+                'Home_Corner_Diff_Avg': 0.0,
+                'Away_Corner_Diff_Avg': 0.0,
+                'Home_Home_Corner_Avg': 0.0,
+                'Away_Away_Corner_Avg': 0.0,
+                'Home_Corner_Std': 0.0,
+                'Away_Corner_Std': 0.0,
+                'Home_Scoring_First_Ratio': 0.0,
+                'Away_Scoring_First_Ratio': 0.0,
+                'Home_Clean_Sheets_Ratio': 0.0,
+                'Away_Clean_Sheets_Ratio': 0.0
             }
             
             for feature, default_value in required_features.items():
@@ -63,23 +78,15 @@ class FeatureEngineer:
             logger.info("Adding market features...")
             season_df = self._add_market_features(season_df)
             
+            logger.info("Adding corner features...")
+            season_df = self._add_corner_features(season_df)
+            
             # Verify all features are present
             logger.info("Verifying features...")
             missing_features = set(required_features.keys()) - set(season_df.columns)
             if missing_features:
                 logger.error(f"Missing features after processing: {missing_features}")
                 raise ValueError(f"Failed to generate required features: {missing_features}")
-            
-            # Log feature statistics
-            logger.info("\nFeature statistics for season {season}:")
-            for feature in sorted(required_features.keys()):
-                stats = season_df[feature].describe()
-                logger.info(f"\n{feature}:")
-                logger.info(f"  Mean: {stats['mean']:.4f}")
-                logger.info(f"  Std: {stats['std']:.4f}")
-                logger.info(f"  Min: {stats['min']:.4f}")
-                logger.info(f"  Max: {stats['max']:.4f}")
-                logger.info(f"  NaN count: {season_df[feature].isna().sum()}")
             
             processed_dfs.append(season_df)
             logger.info(f"Completed processing season: {season}")
@@ -90,12 +97,6 @@ class FeatureEngineer:
         
         # Final sort
         df = df.sort_values(['Date', 'HomeTeam', 'AwayTeam']).reset_index(drop=True)
-        
-        # Final verification
-        logger.info("Performing final feature verification...")
-        missing_features = set(required_features.keys()) - set(df.columns)
-        if missing_features:
-            raise ValueError(f"Features missing in final dataset: {missing_features}")
         
         return df
     
@@ -545,5 +546,84 @@ class FeatureEngineer:
             logger.info(f"  Max: {stats['max']:.4f}")
             if df[col].isna().any():
                 logger.error(f"Found {df[col].isna().sum()} NaN values in {col}")
+        
+        return df
+    
+    def _add_corner_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add corner-related features."""
+        logger = logging.getLogger(__name__)
+        df = df.copy()
+        
+        for team in df['HomeTeam'].unique():
+            # Get team's matches
+            home_matches = df[df['HomeTeam'] == team].sort_values('Date')
+            away_matches = df[df['AwayTeam'] == team].sort_values('Date')
+            
+            # Basic corner averages
+            df.loc[df['HomeTeam'] == team, 'Home_Corners_For_Avg'] = (
+                home_matches['HC'].expanding().mean().shift(1).fillna(0)
+            )
+            df.loc[df['HomeTeam'] == team, 'Home_Corners_Against_Avg'] = (
+                home_matches['AC'].expanding().mean().shift(1).fillna(0)
+            )
+            df.loc[df['AwayTeam'] == team, 'Away_Corners_For_Avg'] = (
+                away_matches['AC'].expanding().mean().shift(1).fillna(0)
+            )
+            df.loc[df['AwayTeam'] == team, 'Away_Corners_Against_Avg'] = (
+                away_matches['HC'].expanding().mean().shift(1).fillna(0)
+            )
+            
+            # Last 3 and 5 matches corner averages
+            for window in [3, 5]:
+                df.loc[df['HomeTeam'] == team, f'Home_Corners_For_Last{window}'] = (
+                    home_matches['HC'].rolling(window=window, min_periods=1).mean().shift(1).fillna(0)
+                )
+                df.loc[df['HomeTeam'] == team, f'Home_Corners_Against_Last{window}'] = (
+                    home_matches['AC'].rolling(window=window, min_periods=1).mean().shift(1).fillna(0)
+                )
+                df.loc[df['AwayTeam'] == team, f'Away_Corners_For_Last{window}'] = (
+                    away_matches['AC'].rolling(window=window, min_periods=1).mean().shift(1).fillna(0)
+                )
+                df.loc[df['AwayTeam'] == team, f'Away_Corners_Against_Last{window}'] = (
+                    away_matches['HC'].rolling(window=window, min_periods=1).mean().shift(1).fillna(0)
+                )
+            
+            # Corner differentials
+            df.loc[df['HomeTeam'] == team, 'Home_Corner_Diff_Avg'] = (
+                (home_matches['HC'] - home_matches['AC']).expanding().mean().shift(1).fillna(0)
+            )
+            df.loc[df['AwayTeam'] == team, 'Away_Corner_Diff_Avg'] = (
+                (away_matches['AC'] - away_matches['HC']).expanding().mean().shift(1).fillna(0)
+            )
+            
+            # Consistency metrics (standard deviation)
+            df.loc[df['HomeTeam'] == team, 'Home_Corner_Std'] = (
+                home_matches['HC'].expanding().std().shift(1).fillna(0)
+            )
+            df.loc[df['AwayTeam'] == team, 'Away_Corner_Std'] = (
+                away_matches['AC'].expanding().std().shift(1).fillna(0)
+            )
+        
+        # Calculate H2H corner averages if not already present
+        if 'H2H_Avg_Corners' not in df.columns:
+            df['H2H_Avg_Corners'] = self._calculate_h2h_stat(df, ['HC', 'AC'], 'sum')
+        
+        # Verify all corner features are present
+        corner_features = [
+            'Home_Corners_For_Avg', 'Home_Corners_Against_Avg',
+            'Away_Corners_For_Avg', 'Away_Corners_Against_Avg',
+            'Home_Corners_For_Last3', 'Home_Corners_Against_Last3',
+            'Away_Corners_For_Last3', 'Away_Corners_Against_Last3',
+            'Home_Corners_For_Last5', 'Home_Corners_Against_Last5',
+            'Away_Corners_For_Last5', 'Away_Corners_Against_Last5',
+            'Home_Corner_Diff_Avg', 'Away_Corner_Diff_Avg',
+            'Home_Corner_Std', 'Away_Corner_Std',
+            'H2H_Avg_Corners'
+        ]
+        
+        missing_features = [f for f in corner_features if f not in df.columns]
+        if missing_features:
+            logger.error(f"Missing corner features: {missing_features}")
+            raise ValueError(f"Failed to generate corner features: {missing_features}")
         
         return df

@@ -183,14 +183,30 @@ def main() -> None:
             predictor.load_models(config.models_dir)
         
         if args.evaluate:
-            # Make predictions on test set
+            # Make predictions
             logger.info("Making predictions...")
             predictions = predictor.predict(test_data)
             
-            # Evaluate performance
-            logger.info("Evaluating performance...")
-            metrics = evaluator.evaluate_predictions(predictions, test_data)
-            logger.info("Evaluation metrics: %s", metrics)
+            # Evaluate predictions
+            logger.info("Evaluating predictions...")
+            metrics = evaluator.evaluate(predictions, test_data)
+            
+            # Log evaluation metrics
+            logger.info("\nEvaluation metrics:")
+            for market, market_metrics in metrics.items():
+                logger.info(f"\n{market.upper()}:")
+                for metric, value in market_metrics.items():
+                    if isinstance(value, dict):
+                        logger.info(f"\n- {metric}:")
+                        for sub_metric, sub_value in value.items():
+                            if isinstance(sub_value, float):
+                                logger.info(f"  - {sub_metric}: {sub_value:.4f}")
+                            else:
+                                logger.info(f"  - {sub_metric}: {sub_value}")
+                    elif isinstance(value, float):
+                        logger.info(f"- {metric}: {value:.4f}")
+                    else:
+                        logger.info(f"- {metric}: {value}")
             
             # Plot results
             logger.info("Plotting results...")

@@ -1,5 +1,5 @@
 """Betting performance evaluation module."""
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -23,420 +23,444 @@ class BettingEvaluator:
         self.market_pnl: Dict[str, float] = {
             market: 0.0 for market in self.config.market_loss_limits
         }
+        self.default_stake = 1.0  # Default stake size for each bet
+        
+        # Detailed tracking of bets and PnL
+        self.bet_details: List[Dict] = []
+        
+        # Define odds ranges for analysis
+        self.odds_ranges = [
+            (1.0, 1.5),
+            (1.5, 2.0),
+            (2.0, 2.5),
+            (2.5, 3.0),
+            (3.0, 4.0),
+            (4.0, float('inf'))
+        ]
+        
+        # Initialize odds range statistics
+        self.odds_stats = {
+            'selective': {range_: {'wins': 0, 'total': 0, 'pnl': 0.0} 
+                        for range_ in self.odds_ranges},
+            'all_matches': {range_: {'wins': 0, 'total': 0, 'pnl': 0.0} 
+                          for range_ in self.odds_ranges}
+        }
     
-    def evaluate_predictions(self, predictions: Dict[str, pd.DataFrame], test_data: pd.DataFrame) -> Dict[str, Dict]:
-        """Evaluate predictions across all markets."""
+    def _calculate_bet_profit(self, bet_amount: float, odds: float, is_winner: bool) -> float:
+        """Calculate profit/loss for a single bet.
+        
+        Args:
+            bet_amount: Stake amount
+            odds: Betting odds
+            is_winner: Whether the bet won
+            
+        Returns:
+            Profit (positive) or loss (negative)
+        """
+        if is_winner:
+            return bet_amount * (odds - 1)  # (odds * stake) - stake
+        return -bet_amount  # Lost stake
+    
+    def evaluate(self, predictions: Dict[str, pd.DataFrame], actual_results: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+        """Evaluate predictions for all markets.
+        
+        Args:
+            predictions: Dictionary of predictions for each market
+            actual_results: DataFrame with actual results
+            
+        Returns:
+            Dictionary with evaluation metrics for each market
+        """
         metrics = {}
         
-        logger.info("\n" + "="*50)
-        logger.info("PREDICTION ACCURACY METRICS")
-        logger.info("="*50)
+        # Evaluate match result predictions
+        if 'match_result' in predictions:
+            logger.info("\nMatch Result Accuracy:")
+            accuracy = self._evaluate_classification(
+                predictions['match_result']['Predicted'],
+                actual_results['FTR']
+            )
+            betting_metrics = self.evaluate_betting_performance(predictions, actual_results, 'match_result')
+            metrics['match_result'] = {
+                'prediction_accuracy': accuracy,
+                **betting_metrics['selective'],
+                'all_matches': betting_metrics['all_matches']
+            }
         
-        for market in predictions:
-            metrics[market] = {}
-            
-            if market == 'match_result':
-                # Calculate pure prediction accuracy
-                y_true = test_data['FTR']
-                y_pred = predictions[market]['Predicted']
-                correct_predictions = (y_pred == y_true).sum()
-                total_predictions = len(y_true)
-                accuracy = correct_predictions / total_predictions
-                
-                # Log detailed predictions
-                logger.info("\nDetailed Match Result Predictions:")
-                logger.info("=" * 100)
-                logger.info(f"{'Date':<12} {'Home':<20} {'Away':<20} {'Score':<8} {'Pred':<6} {'Actual':<6} {'Odds':<6} {'Conf':<6}")
-                logger.info("-" * 100)
-                
-                for idx, row in predictions[market].iterrows():
-                    actual = test_data.loc[idx, 'FTR']
-                    date = test_data.loc[idx, 'Date'].strftime('%Y-%m-%d')
-                    home_team = test_data.loc[idx, 'HomeTeam']
-                    away_team = test_data.loc[idx, 'AwayTeam']
-                    score = f"{test_data.loc[idx, 'FTHG']}-{test_data.loc[idx, 'FTAG']}"
-                    pred = row['Predicted']
-                    confidence = row['Confidence']
-                    
-                    # Get corresponding odds
-                    if pred == 'H':
-                        odds = row['B365H']
-                    elif pred == 'D':
-                        odds = row['B365D']
-                    else:
-                        odds = row['B365A']
-                    
-                    logger.info(f"{date:<12} {home_team:<20} {away_team:<20} {score:<8} {pred:<6} {actual:<6} {odds:<6.2f} {confidence:<6.2f}")
-                    
-                    if pred == actual:
-                        logger.info(f"✓ Correct prediction! Odds: {odds:.2f}, Profit: {odds - 1:.2f}")
-                    else:
-                        logger.info(f"✗ Wrong prediction. Loss: -1.00")
-                    logger.info("-" * 100)
-                
-                # Log aggregate metrics
-                logger.info(f"\nMatch Result Accuracy:")
-                logger.info(f"Total Predictions: {total_predictions}")
-                logger.info(f"Correct Predictions: {correct_predictions}")
-                logger.info(f"Accuracy: {accuracy:.2%}")
-                
-                metrics[market]['prediction_accuracy'] = accuracy
-                
-            elif market == 'over_under':
-                # Calculate over/under prediction accuracy
-                y_true = (test_data['FTHG'] + test_data['FTAG'] > 2.5).astype(int)
-                y_pred = (predictions[market]['Over_Prob'] > 0.5).astype(int)
-                correct_predictions = (y_pred == y_true).sum()
-                total_predictions = len(y_true)
-                accuracy = correct_predictions / total_predictions
-                
-                # Log detailed predictions
-                logger.info("\nDetailed Over/Under Predictions:")
-                logger.info("=" * 100)
-                logger.info(f"{'Date':<12} {'Home':<20} {'Away':<20} {'Score':<8} {'Goals':<6} {'Pred':<6} {'Actual':<6} {'Odds':<6} {'Conf':<6}")
-                logger.info("-" * 100)
-                
-                for idx, row in predictions[market].iterrows():
-                    date = test_data.loc[idx, 'Date'].strftime('%Y-%m-%d')
-                    home_team = test_data.loc[idx, 'HomeTeam']
-                    away_team = test_data.loc[idx, 'AwayTeam']
-                    total_goals = test_data.loc[idx, 'FTHG'] + test_data.loc[idx, 'FTAG']
-                    score = f"{test_data.loc[idx, 'FTHG']}-{test_data.loc[idx, 'FTAG']}"
-                    pred = 'Over' if row['Over_Prob'] > 0.5 else 'Under'
-                    actual = 'Over' if total_goals > 2.5 else 'Under'
-                    confidence = max(row['Over_Prob'], 1 - row['Over_Prob'])
-                    odds = row['B365>2.5'] if pred == 'Over' else row['B365<2.5']
-                    
-                    logger.info(f"{date:<12} {home_team:<20} {away_team:<20} {score:<8} {total_goals:<6} {pred:<6} {actual:<6} {odds:<6.2f} {confidence:<6.2f}")
-                    
-                    if pred == actual:
-                        logger.info(f"✓ Correct prediction! Odds: {odds:.2f}, Profit: {odds - 1:.2f}")
-                    else:
-                        logger.info(f"✗ Wrong prediction. Loss: -1.00")
-                    logger.info("-" * 100)
-                
-                # Log aggregate metrics
-                logger.info(f"\nOver/Under Accuracy:")
-                logger.info(f"Total Predictions: {total_predictions}")
-                logger.info(f"Correct Predictions: {correct_predictions}")
-                logger.info(f"Accuracy: {accuracy:.2%}")
-                
-                metrics[market]['prediction_accuracy'] = accuracy
-                
-            elif market in ['corners', 'cards']:
-                # Calculate regression accuracy metrics
-                y_true = test_data['HC'] + test_data['AC'] if market == 'corners' else test_data['HY'] + test_data['AY']
-                y_pred = predictions[market]['prediction']
-                
-                mae = mean_absolute_error(y_true, y_pred)
-                mse = mean_squared_error(y_true, y_pred)
-                rmse = np.sqrt(mse)
-                
-                # Calculate percentage of predictions within different margins
-                margin_1 = np.mean(abs(y_true - y_pred) <= 1)
-                margin_2 = np.mean(abs(y_true - y_pred) <= 2)
-                margin_3 = np.mean(abs(y_true - y_pred) <= 3)
-                
-                # Log detailed predictions
-                logger.info(f"\nDetailed {market.title()} Predictions:")
-                logger.info("=" * 100)
-                logger.info(f"{'Date':<12} {'Home':<20} {'Away':<20} {'Score':<8} {'Pred':<8} {'Actual':<8} {'Diff':<8} {'Conf':<6}")
-                logger.info("-" * 100)
-                
-                for idx, row in predictions[market].iterrows():
-                    date = test_data.loc[idx, 'Date'].strftime('%Y-%m-%d')
-                    home_team = test_data.loc[idx, 'HomeTeam']
-                    away_team = test_data.loc[idx, 'AwayTeam']
-                    score = f"{test_data.loc[idx, 'FTHG']}-{test_data.loc[idx, 'FTAG']}"
-                    pred = row['prediction']
-                    actual = y_true[idx]
-                    diff = abs(pred - actual)
-                    confidence = row['confidence']
-                    
-                    logger.info(f"{date:<12} {home_team:<20} {away_team:<20} {score:<8} {pred:<8.1f} {actual:<8} {diff:<8.1f} {confidence:<6.2f}")
-                    
-                    margin = 1 if market == 'cards' else 2
-                    if diff <= margin:
-                        logger.info(f"✓ Good prediction! Predicted: {pred:.1f}, Actual: {actual}")
-                    else:
-                        logger.info(f"✗ Prediction off by {diff:.1f} {market}")
-                    logger.info("-" * 100)
-                
-                # Log aggregate metrics
-                logger.info(f"\n{market.title()} Prediction Accuracy:")
-                logger.info(f"Mean Absolute Error: {mae:.2f}")
-                logger.info(f"Root Mean Square Error: {rmse:.2f}")
-                logger.info(f"Within ±1 {market}: {margin_1:.2%}")
-                logger.info(f"Within ±2 {market}: {margin_2:.2%}")
-                logger.info(f"Within ±3 {market}: {margin_3:.2%}")
-                
-                metrics[market].update({
-                    'mae': mae,
-                    'rmse': rmse,
-                    'within_1': margin_1,
-                    'within_2': margin_2,
-                    'within_3': margin_3
-                })
-            
-            # Add betting performance metrics
-            betting_metrics = self._evaluate_market(predictions[market], test_data, market)
-            metrics[market].update(betting_metrics)
-            
-            if metrics[market].get('bets', 0) > 0:
-                logger.info(f"\n{market.upper()} Betting Performance:")
-                logger.info(f"Total Bets: {metrics[market]['bets']}")
-                logger.info(f"Wins: {metrics[market]['wins']}")
-                logger.info(f"Win Rate: {metrics[market]['win_rate']:.2%}")
-                logger.info(f"ROI: {metrics[market]['roi']:.2%}")
-                logger.info(f"P&L: {metrics[market]['pnl']:.2f}")
-                logger.info(f"Max Drawdown: {metrics[market]['max_drawdown']:.2f}")
+        # Evaluate over/under predictions
+        if 'over_under' in predictions:
+            logger.info("\nOver/Under Accuracy:")
+            over_under_preds = (predictions['over_under']['Over_Prob'] > 
+                              predictions['over_under']['Under_Prob']).astype(int)
+            actual_over = (actual_results['FTHG'] + 
+                          actual_results['FTAG'] > 2.5).astype(int)
+            accuracy = self._evaluate_classification(over_under_preds, actual_over)
+            betting_metrics = self.evaluate_betting_performance(predictions, actual_results, 'over_under')
+            metrics['over_under'] = {
+                'prediction_accuracy': accuracy,
+                **betting_metrics['selective'],
+                'all_matches': betting_metrics['all_matches']
+            }
+        
+        # Evaluate corners predictions
+        if 'corners' in predictions:
+            logger.info("\nCorners Prediction Accuracy:")
+            actual_corners = actual_results['HC'] + actual_results['AC']
+            regression_metrics = self._evaluate_regression(
+                predictions['corners']['prediction'],
+                actual_corners
+            )
+            betting_metrics = self.evaluate_betting_performance(predictions, actual_results, 'corners')
+            metrics['corners'] = {
+                **regression_metrics,
+                **betting_metrics['selective'],
+                'all_matches': betting_metrics['all_matches']
+            }
+        
+        # Evaluate cards predictions
+        if 'cards' in predictions:
+            logger.info("\nCards Prediction Accuracy:")
+            actual_cards = actual_results['HY'] + actual_results['AY']
+            regression_metrics = self._evaluate_regression(
+                predictions['cards']['prediction'],
+                actual_cards
+            )
+            betting_metrics = self.evaluate_betting_performance(predictions, actual_results, 'cards')
+            metrics['cards'] = {
+                **regression_metrics,
+                **betting_metrics['selective'],
+                'all_matches': betting_metrics['all_matches']
+            }
         
         return metrics
     
-    def _evaluate_market(self, predictions: pd.DataFrame, test_data: pd.DataFrame, market: str) -> Dict[str, float]:
-        """Evaluate predictions for a specific market.
+    def _evaluate_classification(self, y_pred: pd.Series, y_true: pd.Series) -> float:
+        """Evaluate classification accuracy.
         
         Args:
-            predictions: Predictions for the market
-            test_data: Actual results
-            market: Market being evaluated
+            y_pred: Predicted labels
+            y_true: Actual labels
             
         Returns:
-            Dictionary with market-specific metrics
+            Accuracy score
         """
-        bets = self._place_bets(market, predictions)
+        correct_predictions = (y_pred == y_true).sum()
+        total_predictions = len(y_true)
+        accuracy = correct_predictions / total_predictions
+        return accuracy
+    
+    def _evaluate_regression(self, y_pred: pd.Series, y_true: pd.Series) -> Dict[str, float]:
+        """Evaluate regression metrics.
         
-        if bets.empty:
-            return {
-                'bets': 0,
-                'wins': 0,
-                'win_rate': 0.0,
-                'roi': 0.0,
-                'pnl': 0.0,
-                'max_drawdown': 0.0
-            }
+        Args:
+            y_pred: Predicted values
+            y_true: Actual values
+            
+        Returns:
+            Dictionary with regression metrics
+        """
+        mae = mean_absolute_error(y_true, y_pred)
+        mse = mean_squared_error(y_true, y_pred)
+        rmse = np.sqrt(mse)
         
-        # Merge bets with results
-        result_columns = [
-            'Date', 'HomeTeam', 'AwayTeam', 'FTR', 'HTR',
-            'FTHG', 'FTAG', 'HTHG', 'HTAG',
-            'HC', 'AC', 'HY', 'AY'
-        ]
-        bets = bets.merge(test_data[result_columns], 
-                         on=['Date', 'HomeTeam', 'AwayTeam'])
-        
-        # Calculate bet outcomes
-        bets['Won'] = self._calculate_wins(market, bets)
-        bets['PnL'] = bets.apply(
-            lambda x: x['Stake'] * (x['Odds'] - 1) if x['Won'] else -x['Stake'],
-            axis=1
-        )
-        
-        # Calculate metrics
-        total_bets = len(bets)
-        wins = bets['Won'].sum()
-        pnl = bets['PnL'].sum()
-        roi = pnl / bets['Stake'].sum() if total_bets > 0 else 0.0
-        
-        # Calculate drawdown
-        cumulative_pnl = bets['PnL'].cumsum()
-        rolling_max = cumulative_pnl.expanding().max()
-        drawdown = cumulative_pnl - rolling_max
-        max_drawdown = abs(drawdown.min())
-        
-        # Store bet history
-        self.bets_history.extend(bets.to_dict('records'))
+        # Calculate percentage of predictions within different margins
+        margin_1 = np.mean(abs(y_true - y_pred) <= 1)
+        margin_2 = np.mean(abs(y_true - y_pred) <= 2)
+        margin_3 = np.mean(abs(y_true - y_pred) <= 3)
         
         return {
-            'bets': total_bets,
-            'wins': wins,
-            'win_rate': wins / total_bets if total_bets > 0 else 0.0,
-            'roi': roi,
-            'pnl': pnl,
-            'max_drawdown': max_drawdown
+            'mae': mae,
+            'rmse': rmse,
+            'within_1': margin_1,
+            'within_2': margin_2,
+            'within_3': margin_3
         }
     
-    def _place_bets(self, market: str, predictions: pd.DataFrame) -> pd.DataFrame:
-        """Place bets based on predictions and thresholds.
+    def _get_odds_range(self, odds: float) -> Tuple[float, float]:
+        """Get the odds range for given odds."""
+        for odds_range in self.odds_ranges:
+            if odds_range[0] <= odds < odds_range[1]:
+                return odds_range
+        return self.odds_ranges[-1]  # Return highest range if no match found
+    
+    def _update_odds_stats(self, odds: float, is_winner: bool, profit: float, strategy: str):
+        """Update statistics for odds ranges."""
+        odds_range = self._get_odds_range(odds)
+        self.odds_stats[strategy][odds_range]['total'] += 1
+        if is_winner:
+            self.odds_stats[strategy][odds_range]['wins'] += 1
+        self.odds_stats[strategy][odds_range]['pnl'] += profit
+    
+    def evaluate_betting_performance(self, predictions: Dict[str, pd.DataFrame], 
+                                   actual_results: pd.DataFrame, market: str) -> Dict[str, float]:
+        """Evaluate betting performance for a market."""
+        if market not in predictions:
+            return {
+                'bets': 0, 'wins': 0, 'win_rate': 0.0,
+                'roi': 0.0, 'pnl': 0.0, 'max_drawdown': 0.0,
+                'avg_odds': 0.0, 'avg_winning_odds': 0.0
+            }
         
-        Args:
-            market: Market to bet on
-            predictions: Predictions for the market
-            
-        Returns:
-            DataFrame with placed bets
-        """
-        threshold = self.config.thresholds[market]['confidence']
-        min_odds = self.config.thresholds[market]['min_odds']
-        max_stake_pct = self.config.thresholds[market]['max_stake_pct']
+        # Get predictions for this market
+        market_preds = predictions[market]
         
-        bets = []
+        # Initialize metrics for both strategies
+        metrics = {
+            'selective': {
+                'bets': 0, 'wins': 0, 'win_rate': 0.0,
+                'roi': 0.0, 'pnl': 0.0, 'max_drawdown': 0.0,
+                'avg_odds': 0.0, 'avg_winning_odds': 0.0
+            },
+            'all_matches': {
+                'bets': 0, 'wins': 0, 'win_rate': 0.0,
+                'roi': 0.0, 'pnl': 0.0, 'max_drawdown': 0.0,
+                'avg_odds': 0.0, 'avg_winning_odds': 0.0
+            }
+        }
+        
+        # Track running PnL and odds
+        running_pnl_selective = [0]
+        running_pnl_all = [0]
+        odds_history = {'selective': [], 'all_matches': []}
+        winning_odds = {'selective': [], 'all_matches': []}
         
         if market == 'match_result':
-            for _, pred in predictions.iterrows():
-                # Get highest probability and corresponding outcome
-                probs = {
-                    'Home': pred['Home_Prob'],
-                    'Draw': pred['Draw_Prob'],
-                    'Away': pred['Away_Prob']
-                }
-                best_outcome = max(probs.items(), key=lambda x: x[1])
-                
-                # Get corresponding odds
-                odds_map = {
-                    'Home': pred['B365H'],
-                    'Draw': pred['B365D'],
-                    'Away': pred['B365A']
-                }
-                
-                # Calculate value
-                value_map = {
-                    outcome: prob * odds_map[outcome]
-                    for outcome, prob in probs.items()
-                }
-                
-                # Only bet if we have both high confidence and good value
-                outcome, confidence = best_outcome
-                odds = odds_map[outcome]
-                value = value_map[outcome]
-                
-                if (confidence > threshold and 
-                    odds >= min_odds and 
-                    value > 1.1):  # Value threshold
-                    
-                    bets.append({
-                        'Date': pred['Date'],
-                        'HomeTeam': pred['HomeTeam'],
-                        'AwayTeam': pred['AwayTeam'],
-                        'Market': market,
-                        'Bet': outcome,
-                        'Confidence': confidence,
-                        'Odds': odds,
-                        'Value': value,
-                        'Stake': self._calculate_stake(confidence, odds, max_stake_pct)
-                    })
-        
-        elif market == 'over_under':
-            for _, pred in predictions.iterrows():
-                if ('B365>2.5' in pred and 
-                    pred['Over_Prob'] > threshold and 
-                    pred['B365>2.5'] >= min_odds):
-                    bets.append({
-                        'Date': pred['Date'],
-                        'HomeTeam': pred['HomeTeam'],
-                        'AwayTeam': pred['AwayTeam'],
-                        'Market': market,
-                        'Bet': 'Over',
-                        'Confidence': pred['Over_Prob'],
-                        'Odds': pred['B365>2.5'],
-                        'Stake': self._calculate_stake(pred['Over_Prob'],
-                                                     pred['B365>2.5'],
-                                                     max_stake_pct)
-                    })
-                elif ('B365<2.5' in pred and 
-                      pred['Under_Prob'] > threshold and 
-                      pred['B365<2.5'] >= min_odds):
-                    bets.append({
-                        'Date': pred['Date'],
-                        'HomeTeam': pred['HomeTeam'],
-                        'AwayTeam': pred['AwayTeam'],
-                        'Market': market,
-                        'Bet': 'Under',
-                        'Confidence': pred['Under_Prob'],
-                        'Odds': pred['B365<2.5'],
-                        'Stake': self._calculate_stake(pred['Under_Prob'],
-                                                     pred['B365<2.5'],
-                                                     max_stake_pct)
-                    })
-        
-        return pd.DataFrame(bets) if bets else pd.DataFrame()
-    
-    def _calculate_stake(self, probability: float, odds: float, max_stake_pct: float) -> float:
-        """Calculate stake using Kelly Criterion.
-        
-        Args:
-            probability: Predicted probability
-            odds: Betting odds
-            max_stake_pct: Maximum stake as percentage of bankroll
-            
-        Returns:
-            Stake amount
-        """
-        # Kelly stake = (bp - q) / b
-        # where: b = odds - 1, p = probability of win, q = probability of loss
-        b = odds - 1
-        p = probability
-        q = 1 - p
-        
-        kelly = (b * p - q) / b
-        
-        # Apply Kelly fraction and max stake limit
-        stake = min(
-            kelly * self.config.kelly_fraction,
-            max_stake_pct
-        ) * self.bankroll
-        
-        return max(0, stake)
-    
-    def _calculate_wins(self, market: str, bets: pd.DataFrame) -> pd.Series:
-        """Calculate which bets won.
-        
-        Args:
-            market: Market being evaluated
-            bets: DataFrame with bets
-            
-        Returns:
-            Series indicating if each bet won
-        """
-        if market == 'match_result':
-            return ((bets['Bet'] == 'Home') & (bets['FTR'] == 'H') |
-                   (bets['Bet'] == 'Draw') & (bets['FTR'] == 'D') |
-                   (bets['Bet'] == 'Away') & (bets['FTR'] == 'A'))
-        elif market == 'over_under':
-            total_goals = bets['FTHG'] + bets['FTAG']
-            return ((bets['Bet'] == 'Over') & (total_goals > 2.5) |
-                   (bets['Bet'] == 'Under') & (total_goals < 2.5))
-        else:
-            return pd.Series([False] * len(bets))
-    
-    def plot_performance(self, save_path: Optional[Path] = None) -> None:
-        """Plot betting performance metrics.
-        
-        Args:
-            save_path: Optional path to save plots
-        """
-        if not self.bets_history:
-            print("No bets to plot")
-            return
-            
-        bets_df = pd.DataFrame(self.bets_history)
-        bets_df['Cumulative_PnL'] = bets_df['PnL'].cumsum()
-        
-        # Set up the plot style
-        plt.style.use('default')
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        
-        # Plot 1: Cumulative P&L
-        ax1.plot(range(len(bets_df)), bets_df['Cumulative_PnL'])
-        ax1.set_title('Cumulative P&L')
-        ax1.set_xlabel('Number of Bets')
-        ax1.set_ylabel('Profit/Loss')
-        ax1.grid(True)
-        
-        # Plot 2: P&L by market
-        market_pnl = bets_df.groupby('Market')['PnL'].sum()
-        market_pnl.plot(kind='bar', ax=ax2)
-        ax2.set_title('P&L by Market')
-        ax2.set_xlabel('Market')
-        ax2.set_ylabel('Profit/Loss')
-        ax2.grid(True)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            save_path.mkdir(parents=True, exist_ok=True)
-            plt.savefig(
-                save_path / f'performance_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+            # Selective betting strategy
+            value_bets = (
+                (market_preds['Home_Value'] > self.config.value_threshold) |
+                (market_preds['Draw_Value'] > self.config.value_threshold) |
+                (market_preds['Away_Value'] > self.config.value_threshold)
             )
-        else:
-            plt.show() 
+            high_conf_bets = market_preds['Confidence'] > self.config.confidence_threshold
+            bet_mask_selective = value_bets & high_conf_bets
+            
+            # All matches strategy
+            bet_mask_all = pd.Series(True, index=market_preds.index)
+            
+            for bet_mask, strategy in [(bet_mask_selective, 'selective'), (bet_mask_all, 'all_matches')]:
+                bets = market_preds[bet_mask]
+                metrics[strategy]['bets'] = len(bets)
+                
+                if len(bets) > 0:
+                    # Get actual results for bet matches
+                    results = actual_results.loc[bets.index, 'FTR']
+                    
+                    # Calculate wins and PnL
+                    pnl = []
+                    for idx, bet in bets.iterrows():
+                        result = results.loc[idx]
+                        pred = bet['Predicted']
+                        
+                        # Get odds for the predicted outcome
+                        if pred == 'H':
+                            odds = bet['B365H']
+                        elif pred == 'D':
+                            odds = bet['B365D']
+                        else:  # 'A'
+                            odds = bet['B365A']
+                        
+                        odds_history[strategy].append(odds)
+                        is_winner = (result == pred)
+                        
+                        if is_winner:
+                            metrics[strategy]['wins'] += 1
+                            winning_odds[strategy].append(odds)
+                        
+                        # Calculate profit/loss
+                        profit = self._calculate_bet_profit(
+                            bet_amount=self.default_stake,
+                            odds=odds,
+                            is_winner=is_winner
+                        )
+                        
+                        # Store bet details
+                        self.bet_details.append({
+                            'date': bet['Date'],
+                            'market': market,
+                            'strategy': strategy,
+                            'home_team': bet['HomeTeam'],
+                            'away_team': bet['AwayTeam'],
+                            'prediction': pred,
+                            'actual': result,
+                            'odds': odds,
+                            'stake': self.default_stake,
+                            'profit': profit,
+                            'is_winner': is_winner
+                        })
+                        
+                        pnl.append(profit)
+                        if strategy == 'selective':
+                            running_pnl_selective.append(running_pnl_selective[-1] + profit)
+                        else:
+                            running_pnl_all.append(running_pnl_all[-1] + profit)
+                        
+                        # Update odds range statistics
+                        self._update_odds_stats(odds, is_winner, profit, strategy)
+                    
+                    # Calculate metrics
+                    metrics[strategy]['win_rate'] = metrics[strategy]['wins'] / metrics[strategy]['bets']
+                    metrics[strategy]['pnl'] = sum(pnl)
+                    metrics[strategy]['roi'] = metrics[strategy]['pnl'] / (metrics[strategy]['bets'] * self.default_stake)
+                    metrics[strategy]['avg_odds'] = np.mean(odds_history[strategy])
+                    metrics[strategy]['avg_winning_odds'] = np.mean(winning_odds[strategy]) if winning_odds[strategy] else 0
+                    
+                    # Calculate max drawdown
+                    if strategy == 'selective':
+                        peak = max(running_pnl_selective)
+                        drawdowns = [peak - val for val in running_pnl_selective]
+                        metrics[strategy]['max_drawdown'] = max(drawdowns)
+                    else:
+                        peak = max(running_pnl_all)
+                        drawdowns = [peak - val for val in running_pnl_all]
+                        metrics[strategy]['max_drawdown'] = max(drawdowns)
+        
+        elif market == 'over_under':
+            # Selective betting strategy
+            value_bets = (
+                (market_preds['Over_Value'] > self.config.value_threshold) |
+                (market_preds['Under_Value'] > self.config.value_threshold)
+            )
+            high_conf_bets = market_preds['Confidence'] > self.config.thresholds['over_under']['confidence']
+            bet_mask_selective = value_bets & high_conf_bets
+            
+            # All matches strategy
+            bet_mask_all = pd.Series(True, index=market_preds.index)
+            
+            for bet_mask, strategy in [(bet_mask_selective, 'selective'), (bet_mask_all, 'all_matches')]:
+                bets = market_preds[bet_mask]
+                metrics[strategy]['bets'] = len(bets)
+                
+                if len(bets) > 0:
+                    # Get actual results for bet matches
+                    actual_goals = actual_results.loc[bets.index, ['FTHG', 'FTAG']].sum(axis=1)
+                    actual_over = (actual_goals > 2.5).astype(str).map({
+                        'True': 'Over',
+                        'False': 'Under'
+                    })
+                    
+                    # Calculate wins and PnL
+                    pnl = []
+                    for idx, bet in bets.iterrows():
+                        result = actual_over.loc[idx]
+                        pred = bet['Predicted']
+                        
+                        # Get odds for the predicted outcome
+                        if pred == 'Over':
+                            odds = bet['B365>2.5']
+                        else:  # Under
+                            odds = bet['B365<2.5']
+                        
+                        odds_history[strategy].append(odds)
+                        is_winner = (result == pred)
+                        
+                        if is_winner:
+                            metrics[strategy]['wins'] += 1
+                            winning_odds[strategy].append(odds)
+                        
+                        # Calculate profit/loss
+                        profit = self._calculate_bet_profit(
+                            bet_amount=self.default_stake,
+                            odds=odds,
+                            is_winner=is_winner
+                        )
+                        
+                        # Store bet details
+                        self.bet_details.append({
+                            'date': bet['Date'],
+                            'market': market,
+                            'strategy': strategy,
+                            'home_team': bet['HomeTeam'],
+                            'away_team': bet['AwayTeam'],
+                            'prediction': pred,
+                            'actual': result,
+                            'odds': odds,
+                            'stake': self.default_stake,
+                            'profit': profit,
+                            'is_winner': is_winner
+                        })
+                        
+                        pnl.append(profit)
+                        if strategy == 'selective':
+                            running_pnl_selective.append(running_pnl_selective[-1] + profit)
+                        else:
+                            running_pnl_all.append(running_pnl_all[-1] + profit)
+                        
+                        # Update odds range statistics
+                        self._update_odds_stats(odds, is_winner, profit, strategy)
+                    
+                    # Calculate metrics
+                    metrics[strategy]['win_rate'] = metrics[strategy]['wins'] / metrics[strategy]['bets']
+                    metrics[strategy]['pnl'] = sum(pnl)
+                    metrics[strategy]['roi'] = metrics[strategy]['pnl'] / (metrics[strategy]['bets'] * self.default_stake)
+                    metrics[strategy]['avg_odds'] = np.mean(odds_history[strategy])
+                    metrics[strategy]['avg_winning_odds'] = np.mean(winning_odds[strategy]) if winning_odds[strategy] else 0
+                    
+                    # Calculate max drawdown
+                    if strategy == 'selective':
+                        peak = max(running_pnl_selective)
+                        drawdowns = [peak - val for val in running_pnl_selective]
+                        metrics[strategy]['max_drawdown'] = max(drawdowns)
+                    else:
+                        peak = max(running_pnl_all)
+                        drawdowns = [peak - val for val in running_pnl_all]
+                        metrics[strategy]['max_drawdown'] = max(drawdowns)
+        
+        # Log detailed performance metrics
+        logger.info(f"\nBetting Performance Comparison for {market}:")
+        for strategy in ['selective', 'all_matches']:
+            logger.info(f"\n{strategy.upper()} STRATEGY:")
+            logger.info(f"Number of bets: {metrics[strategy]['bets']}")
+            logger.info(f"Wins: {metrics[strategy]['wins']}")
+            logger.info(f"Win rate: {metrics[strategy]['win_rate']:.2%}")
+            logger.info(f"Average odds: {metrics[strategy]['avg_odds']:.2f}")
+            logger.info(f"Average winning odds: {metrics[strategy]['avg_winning_odds']:.2f}")
+            logger.info(f"Total PnL: {metrics[strategy]['pnl']:.2f}")
+            logger.info(f"ROI: {metrics[strategy]['roi']:.2%}")
+            logger.info(f"Max Drawdown: {metrics[strategy]['max_drawdown']:.2f}")
+            
+            # Log odds range analysis
+            logger.info("\nOdds Range Analysis:")
+            for odds_range in self.odds_ranges:
+                stats = self.odds_stats[strategy][odds_range]
+                if stats['total'] > 0:
+                    win_rate = stats['wins'] / stats['total']
+                    roi = stats['pnl'] / (stats['total'] * self.default_stake)
+                    logger.info(
+                        f"Odds {odds_range[0]:.2f}-{odds_range[1]:.2f}: "
+                        f"{stats['wins']}/{stats['total']} "
+                        f"({win_rate:.1%}) | "
+                        f"ROI: {roi:.1%} | "
+                        f"PnL: {stats['pnl']:.2f}"
+                    )
+        
+        return metrics
+    
+    def save_bet_details(self, save_path: Path) -> None:
+        """Save detailed betting history and odds analysis to CSV."""
+        if self.bet_details:
+            # Save individual bet details
+            df = pd.DataFrame(self.bet_details)
+            save_path.mkdir(parents=True, exist_ok=True)
+            df.to_csv(save_path / 'betting_history.csv', index=False)
+            
+            # Save odds range analysis
+            odds_analysis = []
+            for strategy in ['selective', 'all_matches']:
+                for odds_range, stats in self.odds_stats[strategy].items():
+                    if stats['total'] > 0:
+                        odds_analysis.append({
+                            'strategy': strategy,
+                            'odds_range_start': odds_range[0],
+                            'odds_range_end': odds_range[1],
+                            'total_bets': stats['total'],
+                            'wins': stats['wins'],
+                            'win_rate': stats['wins'] / stats['total'],
+                            'pnl': stats['pnl'],
+                            'roi': stats['pnl'] / (stats['total'] * self.default_stake)
+                        })
+            
+            odds_df = pd.DataFrame(odds_analysis)
+            odds_df.to_csv(save_path / 'odds_analysis.csv', index=False)
+            
+            logger.info(f"\nBetting history saved to {save_path}/betting_history.csv")
+            logger.info(f"Odds analysis saved to {save_path}/odds_analysis.csv")

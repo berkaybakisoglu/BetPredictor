@@ -72,6 +72,11 @@ class BettingConfig:
     stop_loss_pct: float = 0.3  # Reduced from 0.5 to limit potential losses
     kelly_fraction: float = 0.1  # Reduced from 0.25 for more conservative betting
     
+    # Betting thresholds
+    value_threshold: float = 1.1    # Minimum value ratio for value bets
+    confidence_threshold: float = 0.6  # Minimum confidence for selective betting
+    over_under_threshold: float = 0.6  # Minimum probability for over/under bets
+    
     # Market-specific thresholds
     thresholds: Dict[str, Dict] = field(default_factory=lambda: {
         'match_result': {
@@ -101,13 +106,13 @@ class BettingConfig:
         }
     })
     
-    # Market-specific profit/loss limits
+    # Market-specific loss limits (as percentage of bankroll)
     market_loss_limits: Dict[str, float] = field(default_factory=lambda: {
-        'match_result': 0.15,  # Reduced from 0.2 for tighter stop loss
-        'over_under': 0.2,
-        'ht_score': 0.1,      # Reduced for higher risk markets
-        'corners': 0.1,
-        'cards': 0.1
+        'match_result': 0.15,  # 15% max loss on match results
+        'over_under': 0.10,    # 10% max loss on over/under
+        'ht_score': 0.05,      # 5% max loss on half-time scores
+        'corners': 0.05,       # 5% max loss on corners
+        'cards': 0.05          # 5% max loss on cards
     })
 
 @dataclass
