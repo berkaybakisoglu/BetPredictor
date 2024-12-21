@@ -10,6 +10,24 @@ class DataConfig:
     min_training_samples: int = 1000
     data_dir: Path = Path('data/raw')
     
+    # Expected number of matches per season for each league
+    expected_matches: Dict[str, int] = field(default_factory=lambda: {
+        'E0': 380,  # EPL: 20 teams, each plays 38 matches (19 home + 19 away)
+        'SP1': 380, # LaLiga: 20 teams, 38 matches each
+        'D1': 306,  # Bundesliga: 18 teams, 34 matches each
+        'I1': 380,  # Serie A: 20 teams, 38 matches each
+        'F1': 306   # Ligue 1: 18 teams, 34 matches each
+    })
+    
+    # Leagues to include in data loading
+    leagues_to_include: Set[str] = field(default_factory=lambda: {
+        'E0',  # EPL
+        'SP1', # LaLiga
+        'D1',  # Bundesliga
+        'I1',  # Serie A
+        'F1'   # Ligue 1
+    })
+    
     # Required columns for data validation
     required_columns: Set[str] = field(default_factory=lambda: {
         'Date', 'HomeTeam', 'AwayTeam',

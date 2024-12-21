@@ -3,6 +3,10 @@ import argparse
 from pathlib import Path
 import logging
 from datetime import datetime
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+import traceback
 
 from src.config.config import Config, DataConfig, FeatureConfig, ModelConfig, BettingConfig
 from src.data.loader import DataLoader
@@ -112,7 +116,7 @@ def main() -> None:
         
         # Load and preprocess data
         logger.info("Loading data...")
-        train_data, test_data = data_loader.load_data()
+        train_data, test_data = data_loader.load_data(test_mode=args.test_mode)
         
         if args.test_mode:
             logger.info("Running in test mode with reduced dataset...")
@@ -148,6 +152,31 @@ def main() -> None:
             logger.info("Training models...")
             metrics = predictor.train(train_data, save_path=config.models_dir, test_mode=args.test_mode)
             logger.info("Training metrics: %s", metrics)
+            
+            # Plot feature importance for each market
+            logger.info("Plotting feature importance...")
+            output_dir = Path("output/feature_importance")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            for market in predictor.models:
+                importance_df = predictor.feature_importances.get(market)
+                if importance_df is not None:
+                    plt.figure(figsize=(12, 6))
+                    sns.barplot(data=importance_df.head(20), x='importance', y='feature')
+                    plt.title(f'Top 20 Most Important Features - {market}')
+                    plt.xlabel('Importance')
+                    plt.ylabel('Feature')
+                    plt.tight_layout()
+                    plt.savefig(output_dir / f'{market}_feature_importance.png')
+                    plt.close()
+                    
+                    # Also save as CSV for detailed analysis
+                    importance_df.to_csv(output_dir / f'{market}_feature_importance.csv', index=False)
+                    
+                    # Log top 10 features
+                    logger.info(f"\nTop 10 important features for {market}:")
+                    for _, row in importance_df.head(10).iterrows():
+                        logger.info(f"{row['feature']}: {row['importance']:.4f}")
         else:
             # Load existing models
             logger.info("Loading existing models...")

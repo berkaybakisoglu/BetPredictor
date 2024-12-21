@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from tqdm import tqdm
 from src.config.config import FeatureConfig
+import logging
 
 class FeatureEngineer:
     """Handles feature engineering for match prediction."""
@@ -12,45 +13,95 @@ class FeatureEngineer:
         self.config = config
         
     def create_features(self, df: pd.DataFrame, is_training: bool = True) -> pd.DataFrame:
-        """Create all features for model training or prediction.
+        """Create all features for model training or prediction."""
+        logger = logging.getLogger(__name__)
         
-        Args:
-            df: Preprocessed DataFrame with match data
-            is_training: Whether this is for training (True) or prediction (False)
-            
-        Returns:
-            DataFrame with engineered features
-        """
-        df = df.copy()
+        # Initial chronological sort
+        logger.info("Initial chronological sort...")
+        df = df.sort_values(['Date', 'HomeTeam', 'AwayTeam']).reset_index(drop=True)
         
-        # Process each season separately to prevent look-ahead bias
+        # Process each season separately
         seasons = df['Season'].unique()
         processed_dfs = []
         
         for season in tqdm(seasons, desc="Processing seasons", unit="season"):
+            logger.info(f"Processing season: {season}")
             season_df = df[df['Season'] == season].copy()
             
-            # Add standings features first
+            # Initialize required features
+            logger.info("Initializing required features...")
+            required_features = {
+                'Goals_Diff_Home': 0.0, 
+                'Goals_Diff_Away': 0.0,
+                'Home_Points': 0.0, 
+                'Away_Points': 0.0,
+                'Position_Diff': 0.0, 
+                'Points_Diff': 0.0,
+                'Form_Diff': 0.0, 
+                'Home_Form': 0.0, 
+                'Away_Form': 0.0,
+                'General_Form': 0.0
+            }
+            
+            for feature, default_value in required_features.items():
+                if feature not in season_df.columns:
+                    season_df[feature] = default_value
+            
+            # Add features in correct order
+            logger.info("Adding standings features...")
             season_df = self._add_standings_features(season_df)
             
-            # Add other features
+            logger.info("Adding team performance features...")
             season_df = self._add_team_performance_features(season_df)
+            
+            logger.info("Adding H2H features...")
             season_df = self._add_h2h_features(season_df)
+            
+            logger.info("Adding form features...")
             season_df = self._add_form_features(season_df)
+            
+            logger.info("Adding market features...")
             season_df = self._add_market_features(season_df)
             
+            # Verify all features are present
+            logger.info("Verifying features...")
+            missing_features = set(required_features.keys()) - set(season_df.columns)
+            if missing_features:
+                logger.error(f"Missing features after processing: {missing_features}")
+                raise ValueError(f"Failed to generate required features: {missing_features}")
+            
+            # Log feature statistics
+            logger.info("\nFeature statistics for season {season}:")
+            for feature in sorted(required_features.keys()):
+                stats = season_df[feature].describe()
+                logger.info(f"\n{feature}:")
+                logger.info(f"  Mean: {stats['mean']:.4f}")
+                logger.info(f"  Std: {stats['std']:.4f}")
+                logger.info(f"  Min: {stats['min']:.4f}")
+                logger.info(f"  Max: {stats['max']:.4f}")
+                logger.info(f"  NaN count: {season_df[feature].isna().sum()}")
+            
             processed_dfs.append(season_df)
+            logger.info(f"Completed processing season: {season}")
         
         # Combine all processed data
+        logger.info("Combining processed seasons...")
         df = pd.concat(processed_dfs, ignore_index=True)
         
-        # Sort chronologically
-        df = df.sort_values('Date')
+        # Final sort
+        df = df.sort_values(['Date', 'HomeTeam', 'AwayTeam']).reset_index(drop=True)
+        
+        # Final verification
+        logger.info("Performing final feature verification...")
+        missing_features = set(required_features.keys()) - set(df.columns)
+        if missing_features:
+            raise ValueError(f"Features missing in final dataset: {missing_features}")
         
         return df
     
     def _add_team_performance_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add team performance features."""
+        logger = logging.getLogger(__name__)
         teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
         
         # Define multiple windows for rolling averages
@@ -59,74 +110,123 @@ class FeatureEngineer:
         for team in tqdm(teams, desc="Processing team performance", unit="team", leave=False):
             # Home performance
             home_matches = df[df['HomeTeam'] == team].sort_values('Date')
-            
-            # Calculate expanding and rolling averages for key metrics
-            metrics = {
-                'Goals_Scored': 'FTHG',
-                'Goals_Conceded': 'FTAG',
-                'Corners_For': 'HC',
-                'Corners_Against': 'AC',
-                'Cards': 'HY'
-            }
-            
-            for name, col in metrics.items():
-                # Expanding average (all-time)
-                df.loc[df['HomeTeam'] == team, f'Home_{name}_Avg'] = (
-                    home_matches[col].expanding(min_periods=1)
-                    .mean()
-                    .shift(1)  # Shift to prevent look-ahead
-                    .fillna(0)
-                )
-                
-                # Rolling averages for different windows
-                for window in windows:
-                    df.loc[df['HomeTeam'] == team, f'Home_{name}_Last{window}'] = (
-                        home_matches[col].rolling(window, min_periods=1)
-                        .mean()
-                        .shift(1)  # Shift to prevent look-ahead
-                        .fillna(0)
-                    )
-            
-            # Calculate trend indicators (comparing recent to longer-term performance)
-            df.loc[df['HomeTeam'] == team, 'Home_Form_Trend'] = (
-                df.loc[df['HomeTeam'] == team, 'Home_Goals_Scored_Last3'] -
-                df.loc[df['HomeTeam'] == team, 'Home_Goals_Scored_Last10']
-            )
-            
-            # Away performance (similar calculations)
             away_matches = df[df['AwayTeam'] == team].sort_values('Date')
             
-            metrics = {
-                'Goals_Scored': 'FTAG',
-                'Goals_Conceded': 'FTHG',
-                'Corners_For': 'AC',
-                'Corners_Against': 'HC',
-                'Cards': 'AY'
-            }
-            
-            for name, col in metrics.items():
-                # Expanding average
-                df.loc[df['AwayTeam'] == team, f'Away_{name}_Avg'] = (
-                    away_matches[col].expanding(min_periods=1)
-                    .mean()
-                    .shift(1)
-                    .fillna(0)
+            if not home_matches.empty:
+                # Days since last game
+                df.loc[df['HomeTeam'] == team, 'Days_Since_Last_Game_Home'] = (
+                    home_matches['Date'].diff().dt.days.fillna(7.0)
                 )
                 
-                # Rolling averages
-                for window in windows:
-                    df.loc[df['AwayTeam'] == team, f'Away_{name}_Last{window}'] = (
-                        away_matches[col].rolling(window, min_periods=1)
+                # Clean sheets and scoring
+                df.loc[df['HomeTeam'] == team, 'Home_Clean_Sheets'] = (
+                    (home_matches['FTAG'] == 0).astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                df.loc[df['HomeTeam'] == team, 'Home_Failed_Score'] = (
+                    (home_matches['FTHG'] == 0).astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                df.loc[df['HomeTeam'] == team, 'Home_Win_Rate'] = (
+                    (home_matches['FTR'] == 'H').astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                # Goals difference
+                df.loc[df['HomeTeam'] == team, 'Goals_Diff_Home'] = (
+                    home_matches['FTHG'].astype(float).rolling(window=5, min_periods=1).mean() -
+                    home_matches['FTAG'].astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                # Calculate other metrics
+                for name, col in {
+                    'Goals_Scored': 'FTHG',
+                    'Goals_Conceded': 'FTAG',
+                    'Corners_For': 'HC',
+                    'Corners_Against': 'AC',
+                    'Cards': 'HY'
+                }.items():
+                    # Expanding average
+                    df.loc[df['HomeTeam'] == team, f'Home_{name}_Avg'] = (
+                        home_matches[col].astype(float).expanding(min_periods=1)
                         .mean()
                         .shift(1)
-                        .fillna(0)
+                        .fillna(0.0)
                     )
+                    
+                    # Rolling averages
+                    for window in windows:
+                        df.loc[df['HomeTeam'] == team, f'Home_{name}_Last{window}'] = (
+                            home_matches[col].astype(float).rolling(window, min_periods=1)
+                            .mean()
+                            .shift(1)
+                            .fillna(0.0)
+                        )
             
-            # Calculate trend indicators
-            df.loc[df['AwayTeam'] == team, 'Away_Form_Trend'] = (
-                df.loc[df['AwayTeam'] == team, 'Away_Goals_Scored_Last3'] -
-                df.loc[df['AwayTeam'] == team, 'Away_Goals_Scored_Last10']
-            )
+            if not away_matches.empty:
+                # Days since last game
+                df.loc[df['AwayTeam'] == team, 'Days_Since_Last_Game_Away'] = (
+                    away_matches['Date'].diff().dt.days.fillna(7.0)
+                )
+                
+                # Clean sheets and scoring
+                df.loc[df['AwayTeam'] == team, 'Away_Clean_Sheets'] = (
+                    (away_matches['FTHG'] == 0).astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                df.loc[df['AwayTeam'] == team, 'Away_Failed_Score'] = (
+                    (away_matches['FTAG'] == 0).astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                df.loc[df['AwayTeam'] == team, 'Away_Win_Rate'] = (
+                    (away_matches['FTR'] == 'A').astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                # Goals difference
+                df.loc[df['AwayTeam'] == team, 'Goals_Diff_Away'] = (
+                    away_matches['FTAG'].astype(float).rolling(window=5, min_periods=1).mean() -
+                    away_matches['FTHG'].astype(float).rolling(window=5, min_periods=1).mean()
+                ).shift(1).fillna(0.0)
+                
+                # Calculate other metrics
+                for name, col in {
+                    'Goals_Scored': 'FTAG',
+                    'Goals_Conceded': 'FTHG',
+                    'Corners_For': 'AC',
+                    'Corners_Against': 'HC',
+                    'Cards': 'AY'
+                }.items():
+                    # Expanding average
+                    df.loc[df['AwayTeam'] == team, f'Away_{name}_Avg'] = (
+                        away_matches[col].astype(float).expanding(min_periods=1)
+                        .mean()
+                        .shift(1)
+                        .fillna(0.0)
+                    )
+                    
+                    # Rolling averages
+                    for window in windows:
+                        df.loc[df['AwayTeam'] == team, f'Away_{name}_Last{window}'] = (
+                            away_matches[col].astype(float).rolling(window, min_periods=1)
+                            .mean()
+                            .shift(1)
+                            .fillna(0.0)
+                        )
+        
+        # Verify all required features are present
+        required_features = [
+            'Days_Since_Last_Game_Home', 'Days_Since_Last_Game_Away',
+            'Home_Clean_Sheets', 'Away_Clean_Sheets',
+            'Goals_Diff_Home', 'Goals_Diff_Away',
+            'Home_Failed_Score', 'Away_Failed_Score',
+            'Home_Win_Rate', 'Away_Win_Rate'
+        ]
+        
+        missing_features = [f for f in required_features if f not in df.columns]
+        if missing_features:
+            logger.error(f"Missing required features after processing: {missing_features}")
+            for feature in missing_features:
+                df[feature] = 0.0
+                logger.warning(f"Initialized missing feature {feature} with zeros")
         
         return df
     
@@ -140,6 +240,10 @@ class FeatureEngineer:
             DataFrame with H2H features
         """
         df = df.copy()
+        
+        # Calculate total goals and corners
+        df['TotalGoals'] = df['FTHG'] + df['FTAG']
+        df['TotalCorners'] = df['HC'] + df['AC']
         
         def get_h2h_stats(row: pd.Series) -> Dict[str, float]:
             """Calculate H2H stats for a match."""
@@ -279,125 +383,167 @@ class FeatureEngineer:
         
         return df
     
-    def _calculate_standings(self, df: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:
-        """Calculate league standings up to a given date.
+    def _calculate_standings(self, df: pd.DataFrame, current_date: pd.Timestamp) -> pd.DataFrame:
+        """Calculate league standings up to a given date."""
+        # Get matches up to current date
+        past_matches = df[df['Date'] < current_date].copy()
         
-        Args:
-            df: DataFrame with matches
-            date: Date up to which to calculate standings
+        if past_matches.empty:
+            return pd.DataFrame(columns=['points', 'position', 'played', 'won', 'drawn', 'lost',
+                                       'goals_for', 'goals_against', 'goal_diff', 'league'])
+        
+        # Initialize standings for each league
+        standings_dict = {}
+        
+        # Process matches league by league
+        for league in past_matches['League'].unique():
+            league_matches = past_matches[past_matches['League'] == league]
+            teams = pd.concat([league_matches['HomeTeam'], league_matches['AwayTeam']]).unique()
             
-        Returns:
-            DataFrame with standings
-        """
-        # Filter matches up to the given date
-        past_matches = df[df['Date'] < date].copy()
-        
-        # Initialize standings dictionary
-        standings = {}
-        
-        # Process matches chronologically
-        for _, match in past_matches.sort_values('Date').iterrows():
-            # Initialize teams if not in standings
-            for team in [match['HomeTeam'], match['AwayTeam']]:
-                if team not in standings:
-                    standings[team] = {
-                        'points': 0,
-                        'played': 0,
-                        'won': 0,
-                        'drawn': 0,
-                        'lost': 0,
-                        'goals_for': 0,
-                        'goals_against': 0,
-                        'goal_diff': 0
-                    }
+            # Initialize standings for this league
+            league_standings = pd.DataFrame(index=teams)
+            league_standings['points'] = 0
+            league_standings['played'] = 0
+            league_standings['won'] = 0
+            league_standings['drawn'] = 0
+            league_standings['lost'] = 0
+            league_standings['goals_for'] = 0
+            league_standings['goals_against'] = 0
+            league_standings['goal_diff'] = 0
+            league_standings['league'] = league  # Add league column
             
-            # Update home team stats
-            standings[match['HomeTeam']]['played'] += 1
-            standings[match['HomeTeam']]['goals_for'] += match['FTHG']
-            standings[match['HomeTeam']]['goals_against'] += match['FTAG']
-            standings[match['HomeTeam']]['goal_diff'] = (
-                standings[match['HomeTeam']]['goals_for'] - 
-                standings[match['HomeTeam']]['goals_against']
-            )
+            # Calculate standings
+            for _, match in league_matches.iterrows():
+                home_team = match['HomeTeam']
+                away_team = match['AwayTeam']
+                
+                # Update matches played
+                league_standings.at[home_team, 'played'] += 1
+                league_standings.at[away_team, 'played'] += 1
+                
+                # Update goals
+                league_standings.at[home_team, 'goals_for'] += match['FTHG']
+                league_standings.at[home_team, 'goals_against'] += match['FTAG']
+                league_standings.at[away_team, 'goals_for'] += match['FTAG']
+                league_standings.at[away_team, 'goals_against'] += match['FTHG']
+                
+                # Update results based on FTR (Full Time Result)
+                if match['FTR'] == 'H':  # Home win
+                    league_standings.at[home_team, 'won'] += 1
+                    league_standings.at[away_team, 'lost'] += 1
+                    league_standings.at[home_team, 'points'] += 3
+                elif match['FTR'] == 'A':  # Away win
+                    league_standings.at[away_team, 'won'] += 1
+                    league_standings.at[home_team, 'lost'] += 1
+                    league_standings.at[away_team, 'points'] += 3
+                else:  # Draw
+                    league_standings.at[home_team, 'drawn'] += 1
+                    league_standings.at[away_team, 'drawn'] += 1
+                    league_standings.at[home_team, 'points'] += 1
+                    league_standings.at[away_team, 'points'] += 1
             
-            # Update away team stats
-            standings[match['AwayTeam']]['played'] += 1
-            standings[match['AwayTeam']]['goals_for'] += match['FTAG']
-            standings[match['AwayTeam']]['goals_against'] += match['FTHG']
-            standings[match['AwayTeam']]['goal_diff'] = (
-                standings[match['AwayTeam']]['goals_for'] - 
-                standings[match['AwayTeam']]['goals_against']
-            )
+            # Calculate goal difference
+            league_standings['goal_diff'] = league_standings['goals_for'] - league_standings['goals_against']
             
-            # Update points and results
-            if match['FTR'] == 'H':
-                standings[match['HomeTeam']]['points'] += 3
-                standings[match['HomeTeam']]['won'] += 1
-                standings[match['AwayTeam']]['lost'] += 1
-            elif match['FTR'] == 'A':
-                standings[match['AwayTeam']]['points'] += 3
-                standings[match['AwayTeam']]['won'] += 1
-                standings[match['HomeTeam']]['lost'] += 1
-            else:  # Draw
-                standings[match['HomeTeam']]['points'] += 1
-                standings[match['AwayTeam']]['points'] += 1
-                standings[match['HomeTeam']]['drawn'] += 1
-                standings[match['AwayTeam']]['drawn'] += 1
+            # Sort and assign positions within league
+            league_standings = league_standings.sort_values(['points', 'goal_diff', 'goals_for'], 
+                                                          ascending=[False, False, False])
+            league_standings['position'] = range(1, len(league_standings) + 1)
+            
+            # Create unique index by combining team and league
+            league_standings.index = [f"{team}_{league}" for team in league_standings.index]
+            
+            # Store in dictionary
+            standings_dict[league] = league_standings
         
-        # Convert to DataFrame and sort by points and goal difference
-        standings_df = pd.DataFrame.from_dict(standings, orient='index')
+        # Combine all league standings
+        final_standings = pd.concat(standings_dict.values())
         
-        # Ensure all required columns exist
-        required_columns = ['points', 'goal_diff', 'goals_for']
-        for col in required_columns:
-            if col not in standings_df.columns:
-                standings_df[col] = 0
+        # Create a lookup dictionary for quick team-league position access
+        position_lookup = {}
+        for idx in final_standings.index:
+            team, league = idx.rsplit('_', 1)
+            position_lookup[(team, league)] = {
+                'position': final_standings.loc[idx, 'position'],
+                'points': final_standings.loc[idx, 'points']
+            }
         
-        # Sort by points, goal difference, and goals for
-        standings_df = standings_df.sort_values(
-            by=['points', 'goal_diff', 'goals_for'],
-            ascending=[False, False, False]
-        )
-        
-        # Add position column
-        standings_df['position'] = range(1, len(standings_df) + 1)
-        
-        return standings_df
+        return position_lookup
 
     def _add_standings_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add standings-based features."""
         df = df.copy()
+        logger = logging.getLogger(__name__)
         
         # Process each match with progress bar
         for idx, row in tqdm(df.iterrows(), desc="Processing standings", total=len(df), unit="match", leave=False):
             # Calculate standings before this match
             standings = self._calculate_standings(df, row['Date'])
             
+            # Debug logging
+            logger.debug(f"Processing match {idx}: {row['HomeTeam']} vs {row['AwayTeam']}")
+            logger.debug(f"Standings keys: {list(standings.keys())}")
+            
             # Add features for both teams
             for team, prefix in [(row['HomeTeam'], 'Home'), (row['AwayTeam'], 'Away')]:
-                if team in standings.index:
-                    team_stats = standings.loc[team]
-                    df.loc[idx, f'{prefix}_Position'] = team_stats['position']
-                    df.loc[idx, f'{prefix}_Points'] = team_stats['points']
-                    df.loc[idx, f'{prefix}_Played'] = team_stats['played']
-                    df.loc[idx, f'{prefix}_WinRatio'] = team_stats['won'] / team_stats['played'] if team_stats['played'] > 0 else 0
-                    df.loc[idx, f'{prefix}_GoalDiff'] = team_stats['goal_diff']
-                    df.loc[idx, f'{prefix}_AvgGoalsFor'] = team_stats['goals_for'] / team_stats['played'] if team_stats['played'] > 0 else 0
-                    df.loc[idx, f'{prefix}_AvgGoalsAgainst'] = team_stats['goals_against'] / team_stats['played'] if team_stats['played'] > 0 else 0
+                # Get team stats using team and league
+                team_key = (team, row['League'])
+                logger.debug(f"Looking up team {team} in league {row['League']}")
+                
+                if team_key in standings:
+                    team_stats = standings[team_key]
+                    logger.debug(f"Found stats for {team}: {team_stats}")
+                    
+                    # Ensure we're getting numeric values
+                    position = float(team_stats['position'])
+                    points = float(team_stats['points'])
+                    
+                    # Verify values are reasonable
+                    if position <= 0 or position > 20:
+                        logger.warning(f"Invalid position {position} for {team}, using default")
+                        position = 20.0
+                    
+                    if points < 0:
+                        logger.warning(f"Invalid points {points} for {team}, using default")
+                        points = 0.0
+                    
+                    df.at[idx, f'{prefix}_League_Position'] = position
+                    df.at[idx, f'{prefix}_Points'] = points
+                    
+                    logger.debug(f"Set {prefix}_League_Position={position}, {prefix}_Points={points}")
                 else:
+                    logger.warning(f"No standings found for {team} in {row['League']}")
                     # Fill with defaults for new teams
-                    df.loc[idx, [
-                        f'{prefix}_Position',
-                        f'{prefix}_Points',
-                        f'{prefix}_Played',
-                        f'{prefix}_WinRatio',
-                        f'{prefix}_GoalDiff',
-                        f'{prefix}_AvgGoalsFor',
-                        f'{prefix}_AvgGoalsAgainst'
-                    ]] = [0, 0, 0, 0, 0, 0, 0]
+                    df.at[idx, f'{prefix}_League_Position'] = 20.0  # Default to bottom position
+                    df.at[idx, f'{prefix}_Points'] = 0.0
             
-            # Add position difference and points difference
-            df.loc[idx, 'Position_Diff'] = df.loc[idx, 'Away_Position'] - df.loc[idx, 'Home_Position']
-            df.loc[idx, 'Points_Diff'] = df.loc[idx, 'Away_Points'] - df.loc[idx, 'Home_Points']
+            # Add position and points differences
+            home_pos = df.at[idx, 'Home_League_Position']
+            away_pos = df.at[idx, 'Away_League_Position']
+            home_pts = df.at[idx, 'Home_Points']
+            away_pts = df.at[idx, 'Away_Points']
+            
+            df.at[idx, 'Position_Diff'] = away_pos - home_pos
+            df.at[idx, 'Points_Diff'] = away_pts - home_pts
+            
+            # Verify values were set correctly
+            logger.debug(f"Final values for match {idx}:")
+            logger.debug(f"Home_League_Position: {df.at[idx, 'Home_League_Position']}")
+            logger.debug(f"Away_League_Position: {df.at[idx, 'Away_League_Position']}")
+            logger.debug(f"Home_Points: {df.at[idx, 'Home_Points']}")
+            logger.debug(f"Away_Points: {df.at[idx, 'Away_Points']}")
+            logger.debug(f"Position_Diff: {df.at[idx, 'Position_Diff']}")
+            logger.debug(f"Points_Diff: {df.at[idx, 'Points_Diff']}")
+        
+        # Verify final values
+        for col in ['Home_League_Position', 'Away_League_Position', 'Home_Points', 'Away_Points', 'Position_Diff', 'Points_Diff']:
+            stats = df[col].describe()
+            logger.info(f"\nStats for {col}:")
+            logger.info(f"  Mean: {stats['mean']:.4f}")
+            logger.info(f"  Std: {stats['std']:.4f}")
+            logger.info(f"  Min: {stats['min']:.4f}")
+            logger.info(f"  Max: {stats['max']:.4f}")
+            if df[col].isna().any():
+                logger.error(f"Found {df[col].isna().sum()} NaN values in {col}")
         
         return df

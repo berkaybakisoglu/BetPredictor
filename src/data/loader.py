@@ -14,60 +14,127 @@ class DataLoader:
     def __init__(self, config: DataConfig):
         self.config = config
         
-    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def load_data(self, test_mode: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Load and preprocess all data files.
         
         Returns:
-            Tuple of (train_data, test_data)
+            Tuple of (training_data, test_data)
         """
-        all_data = []
+        logger = logging.getLogger(__name__)
         
-        # Load all data files
-        data_files = sorted(self.config.data_dir.glob('*.xls*'))
+        # Get list of data files
+        data_files = sorted(self.config.data_dir.glob('*.xls*'))  # Include .xls and .xlsx
         logger.info(f"Found {len(data_files)} data files in {self.config.data_dir}")
         
-        # Add progress bar for files
-        for file_path in tqdm(data_files, desc="Processing data files", unit="file"):
-            df = self._load_and_process_file(file_path)
-            if df is not None:
-                df = self._process_all_leagues(df)
-                all_data.append(df)
+        # In test mode, we only need 2020-2024 data
+        if test_mode:
+            required_years = set(range(2020, 2024))  # 2020-2023 for test mode
+            data_files = [f for f in data_files if any(str(year) in f.name for year in required_years)]
+            logger.info(f"Test mode: Using {len(data_files)} files for years 2020-2023")
+        
+        all_data = []
+        
+        # Process each file
+        for file in tqdm(data_files, desc="Processing data files", unit="file"):
+            logger.info(f"\nProcessing file: {file}")
+            
+            # Read Excel file
+            excel_file = pd.ExcelFile(file)
+            
+            # Process each sheet
+            for sheet in excel_file.sheet_names:
+                if sheet in self.config.leagues_to_include:
+                    logger.info(f"Reading sheet: {sheet}")
+                    
+                    try:
+                        # Read data from sheet
+                        df = pd.read_excel(excel_file, sheet_name=sheet)
+                        
+                        if len(df) == 0:
+                            logger.warning(f"Empty sheet: {sheet}")
+                            continue
+                        
+                        # Add league identifier
+                        df['League'] = sheet
+                        
+                        # Basic data validation
+                        if not all(col in df.columns for col in self.config.required_columns):
+                            missing = set(self.config.required_columns) - set(df.columns)
+                            logger.warning(f"Missing required columns in {sheet}: {missing}")
+                            continue
+                        
+                        # Convert date column
+                        df['Date'] = pd.to_datetime(df['Date'])
+                        
+                        # Extract season
+                        df['Season'] = df['Date'].dt.year
+                        # Adjust season for matches in latter half of year
+                        df.loc[df['Date'].dt.month > 6, 'Season'] += 1
+                        
+                        # Log data info
+                        logger.info(f"Loaded {len(df)} rows from sheet {sheet}")
+                        logger.info(f"Data range: {df['Date'].min()} to {df['Date'].max()}")
+                        logger.info(f"Number of unique teams: {len(set(df['HomeTeam'].unique()) | set(df['AwayTeam'].unique()))}")
+                        
+                        # Verify number of matches per season
+                        matches_per_season = df.groupby('Season').size()
+                        logger.info(f"Number of matches per season: {matches_per_season}")
+                        
+                        # Check for expected number of matches
+                        expected = self.config.expected_matches.get(sheet)
+                        if expected is not None:
+                            for season, count in matches_per_season.items():
+                                if count > expected:
+                                    logger.warning(f"Season {season} has {count} matches (expected {expected})")
+                                elif count < expected * 0.8:  # Allow for some missing matches (80% threshold)
+                                    logger.warning(f"Season {season} has too few matches: {count} (expected {expected})")
+                                    
+                        all_data.append(df)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing sheet {sheet}: {str(e)}")
+                        continue
+        
+        if not all_data:
+            raise ValueError("No valid data loaded")
         
         # Combine all data
-        logger.info("Combining all datasets...")
-        df = pd.concat(all_data, ignore_index=True)
-        df = df.drop_duplicates()
-        logger.info(f"Combined dataset has {len(df)} total rows after removing duplicates")
+        combined_data = pd.concat(all_data, ignore_index=True)
         
-        # Extract season from Date
-        df['Season'] = df['Date'].dt.year
-        df.loc[df['Date'].dt.month < 8, 'Season'] -= 1  # Adjust for season spanning calendar years
+        # Sort by date
+        combined_data = combined_data.sort_values('Date').reset_index(drop=True)
         
-        # Split into training and test sets by complete seasons
-        logger.info("Splitting data into train and test sets...")
-        train_data = df[df['Season'] < 2022].copy()  # Up to 2021-22 season
-        test_data = df[df['Season'] >= 2022].copy()  # 2022-23 season onwards
+        if test_mode:
+            # Get unique seasons
+            seasons = sorted(combined_data['Season'].unique())
+            if len(seasons) >= 3:
+                # Use last 3 seasons: 2 for training, 1 for testing
+                test_season = seasons[-1]  # Last season for testing
+                train_seasons = seasons[-3:-1]  # Previous 2 seasons for training
+                logger.info(f"Test mode - Training seasons: {train_seasons}, Test season: {test_season}")
+                
+                # Split data
+                train_data = combined_data[combined_data['Season'].isin(train_seasons)].copy()
+                test_data = combined_data[combined_data['Season'] == test_season].copy()
+            else:
+                raise ValueError(f"Not enough seasons for test mode. Need at least 3 seasons, found {len(seasons)}")
+        else:
+            # Split into training and test sets using date
+            split_date = pd.Timestamp('2022-01-01')  # Use 2022 as cutoff for non-test mode
+            train_data = combined_data[combined_data['Date'] < split_date].copy()
+            test_data = combined_data[combined_data['Date'] >= split_date].copy()
         
-        logger.info(f"Training data: {len(train_data)} rows ({train_data['Date'].min()} to {train_data['Date'].max()})")
-        logger.info(f"Test data: {len(test_data)} rows ({test_data['Date'].min()} to {test_data['Date'].max()})")
-        
-        # Log data info per league
-        logger.info("\nData distribution across leagues:")
-        for league in sorted(df['League'].unique()):
-            train_league = train_data[train_data['League'] == league]
-            test_league = test_data[test_data['League'] == league]
+        # Log data splits
+        for league in train_data['League'].unique():
             logger.info(f"\n{league}:")
-            logger.info(f"Training data: {len(train_league)} matches")
-            logger.info(f"Test data: {len(test_league)} matches")
+            logger.info(f"Training data: {len(train_data[train_data['League'] == league])} matches")
+            logger.info(f"Test data: {len(test_data[test_data['League'] == league])} matches")
         
+        # Log seasons
         train_seasons = sorted(train_data['Season'].unique())
         test_seasons = sorted(test_data['Season'].unique())
-        logger.info(f"\nTraining seasons: {train_seasons}")
+        logger.info(f"Training seasons: {train_seasons}")
         logger.info(f"Test seasons: {test_seasons}")
-        
-        # Verify no season overlap
-        if set(train_seasons) & set(test_seasons):
-            logger.warning("WARNING: Some seasons appear in both training and test sets!")
         
         return train_data, test_data
     

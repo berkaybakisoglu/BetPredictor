@@ -1,37 +1,69 @@
-"""Match prediction module."""
-from typing import Dict, List, Tuple, Optional
+"""Unified predictor module for all betting markets."""
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error, mean_absolute_error, r2_score
-import joblib
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 import logging
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    mean_squared_error, mean_absolute_error, r2_score
+)
+import joblib
 
-from src.config.config import ModelConfig
+logger = logging.getLogger(__name__)
 
 class UnifiedPredictor:
-    """Unified predictor for all betting markets."""
+    """Unified predictor for all betting markets.
+    
+    This class handles both classification (match results, over/under) and 
+    regression (corners, cards) predictions using Random Forest models.
+    
+    Attributes:
+        config: Model configuration settings
+        models: Dictionary of classification models
+        regression_models: Dictionary of regression models
+        scalers: Dictionary of feature scalers
+        feature_sets: Dictionary of feature sets for each market
+        feature_importances: Dictionary storing feature importance for each market
+    """
     
     def __init__(self, config: ModelConfig):
+        """Initialize the predictor.
+        
+        Args:
+            config: Model configuration settings
+        """
         self.config = config
         self.models: Dict[str, RandomForestClassifier] = {}
-        self.regression_models: Dict[str, RandomForestRegressor] = {}  # For corners and cards
+        self.regression_models: Dict[str, RandomForestRegressor] = {}
         self.scalers: Dict[str, StandardScaler] = {}
         self.feature_sets: Dict[str, List[str]] = self._define_feature_sets()
-        
+        self.feature_importances: Dict[str, pd.DataFrame] = {}
+    
     def _define_feature_sets(self) -> Dict[str, List[str]]:
-        """Define feature sets for each market."""
+        """Define feature sets for each market.
+        
+        Returns:
+            Dictionary mapping market names to their required features
+        """
+        # Base features used by all markets
         base_features = [
+            # Team performance metrics
             'Home_Goals_Scored_Avg', 'Home_Goals_Conceded_Avg',
             'Away_Goals_Scored_Avg', 'Away_Goals_Conceded_Avg',
             'Home_Form', 'Away_Form',
+            
+            # Head-to-head statistics
             'H2H_Home_Wins', 'H2H_Away_Wins', 'H2H_Draws',
-            'H2H_Avg_Goals', 'Home_ImpliedProb', 'Draw_ImpliedProb',
-            'Away_ImpliedProb'
+            'H2H_Avg_Goals',
+            
+            # Market implied probabilities
+            'Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb'
         ]
         
+        # Additional features for specific markets
         corner_features = [
             'Home_Corners_For_Avg', 'Home_Corners_Against_Avg',
             'Away_Corners_For_Avg', 'Away_Corners_Against_Avg',
@@ -39,16 +71,196 @@ class UnifiedPredictor:
         ]
         
         card_features = [
-            'Home_Cards_Avg', 'Away_Cards_Avg'
+            'Home_Cards_Avg', 'Away_Cards_Avg',
+            'Home_Cards_Last5', 'Away_Cards_Last5'
         ]
         
+        # Define feature sets for each market
         return {
-            'match_result': base_features,
-            'over_under': base_features,
-            'ht_score': base_features,
+            'match_result': base_features + [
+                'Home_League_Position', 'Away_League_Position',
+                'Position_Diff', 'Points_Diff'
+            ],
+            'over_under': base_features + [
+                'Goals_Diff_Home', 'Goals_Diff_Away',
+                'Home_Clean_Sheets', 'Away_Clean_Sheets'
+            ],
             'corners': base_features + corner_features,
             'cards': base_features + card_features
         }
+    
+    def _prepare_training_data(self, df: pd.DataFrame, market: str, train_seasons: List[int], test_season: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Prepare training and test data for a market.
+        
+        Args:
+            df: Input DataFrame
+            market: Market name
+            train_seasons: List of seasons for training
+            test_season: Season for testing
+            
+        Returns:
+            Tuple of (X_train_scaled, X_test_scaled, y_train, y_test)
+        """
+        # Get features and target
+        X = df[self.feature_sets[market]].copy()
+        y = self._get_target(df, market)
+        
+        # Ensure X and y are aligned after filtering invalid targets
+        valid_indices = y.index
+        X = X.loc[valid_indices]
+        
+        # Log feature information
+        logger.info(f"Features used ({len(self.feature_sets[market])}):")
+        for feature in self.feature_sets[market]:
+            logger.info(f"- {feature}")
+        
+        logger.info(f"\nTraining data size after filtering:")
+        logger.info(f"Total samples: {len(X)}")
+        logger.info(f"Valid samples: {len(valid_indices)}")
+        
+        if len(X) < self.config.min_training_samples:
+            raise ValueError(f"Insufficient training data for {market} after filtering")
+        
+        # Split data
+        X_train = X[df['Season'].isin(train_seasons)]
+        y_train = y[df['Season'].isin(train_seasons)]
+        X_test = X[df['Season'] == test_season]
+        y_test = y[df['Season'] == test_season]
+        
+        # Scale features
+        self.scalers[market] = StandardScaler()
+        X_train_scaled = self.scalers[market].fit_transform(X_train)
+        X_test_scaled = self.scalers[market].transform(X_test)
+        
+        return X_train_scaled, X_test_scaled, y_train, y_test, X.columns
+    
+    def _train_regression_model(self, market: str, X_train: np.ndarray, X_test: np.ndarray, 
+                              y_train: np.ndarray, y_test: np.ndarray, feature_names: pd.Index) -> Dict[str, float]:
+        """Train regression model for corners/cards markets.
+        
+        Args:
+            market: Market name
+            X_train: Training features
+            X_test: Test features
+            y_train: Training targets
+            y_test: Test targets
+            feature_names: Names of features
+            
+        Returns:
+            Dictionary of metrics
+        """
+        # Initialize model
+        self.regression_models[market] = RandomForestRegressor(
+            n_estimators=200,
+            max_depth=15,
+            min_samples_split=10,
+            min_samples_leaf=5,
+            random_state=42
+        )
+        
+        # Train model
+        self.regression_models[market].fit(X_train, y_train)
+        
+        # Make predictions
+        y_pred = self.regression_models[market].predict(X_test)
+        
+        # Calculate metrics
+        metrics = {
+            'mse': mean_squared_error(y_test, y_pred),
+            'rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
+            'mae': mean_absolute_error(y_test, y_pred),
+            'r2': r2_score(y_test, y_pred)
+        }
+        
+        # Calculate feature importance
+        self.feature_importances[market] = pd.DataFrame({
+            'feature': feature_names,
+            'importance': self.regression_models[market].feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        return metrics
+    
+    def _train_classification_model(self, market: str, X_train: np.ndarray, X_test: np.ndarray, 
+                                  y_train: np.ndarray, y_test: np.ndarray, feature_names: pd.Index) -> Dict[str, float]:
+        """Train classification model for match result/over-under markets.
+        
+        Args:
+            market: Market name
+            X_train: Training features
+            X_test: Test features
+            y_train: Training targets
+            y_test: Test targets
+            feature_names: Names of features
+            
+        Returns:
+            Dictionary of metrics
+        """
+        # Initialize model
+        self.models[market] = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=15,
+            min_samples_split=10,
+            min_samples_leaf=5,
+            class_weight='balanced',
+            random_state=42
+        )
+        
+        # Train model
+        self.models[market].fit(X_train, y_train)
+        
+        # Make predictions
+        y_pred = self.models[market].predict(X_test)
+        
+        # Calculate metrics
+        metrics = {
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, average='weighted'),
+            'recall': recall_score(y_test, y_pred, average='weighted'),
+            'f1': f1_score(y_test, y_pred, average='weighted')
+        }
+        
+        # Calculate feature importance
+        self.feature_importances[market] = pd.DataFrame({
+            'feature': feature_names,
+            'importance': self.models[market].feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        return metrics
+    
+    def _save_model(self, market: str, save_path: Path) -> None:
+        """Save model, scaler, and feature importance for a market.
+        
+        Args:
+            market: Market name
+            save_path: Path to save files
+        """
+        save_path.mkdir(parents=True, exist_ok=True)
+        
+        # Save model
+        if market in ['corners', 'cards']:
+            joblib.dump(self.regression_models[market], save_path / f"{market}_model.joblib")
+        else:
+            joblib.dump(self.models[market], save_path / f"{market}_model.joblib")
+        
+        # Save scaler and feature importance
+        joblib.dump(self.scalers[market], save_path / f"{market}_scaler.joblib")
+        importance_path = save_path / f"{market}_importance.csv"
+        self.feature_importances[market].to_csv(importance_path, index=False)
+    
+    def _log_results(self, market: str, metrics: Dict[str, float]) -> None:
+        """Log training results for a market.
+        
+        Args:
+            market: Market name
+            metrics: Dictionary of metrics
+        """
+        logger.info(f"\n{market} metrics:")
+        for metric, value in metrics.items():
+            logger.info(f"- {metric}: {value:.4f}")
+        
+        logger.info(f"\nTop 10 important features for {market}:")
+        for _, row in self.feature_importances[market].head(10).iterrows():
+            logger.info(f"- {row['feature']}: {row['importance']:.4f}")
     
     def train(self, df: pd.DataFrame, save_path: Optional[Path] = None, test_mode: bool = False) -> Dict[str, Dict[str, float]]:
         """Train models for all enabled markets using time-series validation.
@@ -64,10 +276,8 @@ class UnifiedPredictor:
         metrics = {}
         logger = logging.getLogger(__name__)
         
-        # Sort by date to ensure chronological order
+        # Sort by date and validate seasons
         df = df.sort_values('Date')
-        
-        # Get unique seasons for time-series validation
         seasons = df['Season'].unique()
         logger.info(f"Training data spans {len(seasons)} seasons: {sorted(seasons)}")
         
@@ -76,119 +286,43 @@ class UnifiedPredictor:
         elif test_mode and len(seasons) < 2:
             raise ValueError("Need at least 2 seasons even in test mode")
         
-        # Use the last season as final test set
+        # Define training and test seasons
         train_seasons = seasons[:-1]
         test_season = seasons[-1]
         logger.info(f"Using seasons {train_seasons} for training and season {test_season} for testing")
         
+        # Train models for each market
         for market in self.config.markets:
             if not self.config.markets[market]:
                 logger.info(f"Skipping {market} market (disabled in config)")
                 continue
-                
+            
             logger.info(f"\n{'='*50}")
             logger.info(f"Training {market} model...")
             logger.info(f"{'='*50}")
             
             try:
-                # Get features and target
-                X = df[self.feature_sets[market]].copy()
-                y = self._get_target(df, market)
+                # Prepare data
+                X_train, X_test, y_train, y_test, feature_names = self._prepare_training_data(
+                    df, market, train_seasons, test_season
+                )
                 
-                # Ensure X and y are aligned after filtering invalid targets
-                valid_indices = y.index
-                X = X.loc[valid_indices]
-                
-                # Log feature information
-                logger.info(f"Features used ({len(self.feature_sets[market])}):")
-                for feature in self.feature_sets[market]:
-                    logger.info(f"- {feature}")
-                
-                logger.info(f"\nTraining data size after filtering:")
-                logger.info(f"Total samples: {len(X)}")
-                logger.info(f"Valid samples: {len(valid_indices)}")
-                
-                if len(X) < self.config.min_training_samples:
-                    logger.warning(f"Insufficient training data for {market} after filtering")
-                    continue
-                
-                # Handle missing values and split data
-                X_train = X[df['Season'].isin(train_seasons)]
-                y_train = y[df['Season'].isin(train_seasons)]
-                X_test = X[df['Season'] == test_season]
-                y_test = y[df['Season'] == test_season]
-                
-                # Scale features
-                scaler = StandardScaler()
-                X_train_scaled = scaler.fit_transform(X_train)
-                X_test_scaled = scaler.transform(X_test)
-                
-                # Store the scaler
-                self.scalers[market] = scaler
-                
+                # Train model and get metrics
                 if market in ['corners', 'cards']:
-                    # Use regression for corners and cards
-                    model = RandomForestRegressor(
-                        n_estimators=200,
-                        max_depth=15,
-                        min_samples_split=10,
-                        min_samples_leaf=5,
-                        random_state=42
+                    metrics[market] = self._train_regression_model(
+                        market, X_train, X_test, y_train, y_test, feature_names
                     )
-                    model.fit(X_train_scaled, y_train)
-                    
-                    # Make predictions
-                    y_pred = model.predict(X_test_scaled)
-                    
-                    # Calculate regression metrics
-                    metrics[market] = {
-                        'mse': mean_squared_error(y_test, y_pred),
-                        'rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
-                        'mae': mean_absolute_error(y_test, y_pred),
-                        'r2': r2_score(y_test, y_pred)
-                    }
-                    
-                    # Store model
-                    self.regression_models[market] = model
                 else:
-                    # Classification for other markets
-                    model = RandomForestClassifier(
-                        n_estimators=200,
-                        max_depth=15,
-                        min_samples_split=10,
-                        min_samples_leaf=5,
-                        class_weight='balanced',
-                        random_state=42
+                    metrics[market] = self._train_classification_model(
+                        market, X_train, X_test, y_train, y_test, feature_names
                     )
-                    model.fit(X_train_scaled, y_train)
-                    
-                    # Make predictions
-                    y_pred = model.predict(X_test_scaled)
-                    
-                    # Calculate classification metrics
-                    metrics[market] = {
-                        'accuracy': accuracy_score(y_test, y_pred),
-                        'precision': precision_score(y_test, y_pred, average='weighted'),
-                        'recall': recall_score(y_test, y_pred, average='weighted'),
-                        'f1': f1_score(y_test, y_pred, average='weighted')
-                    }
-                    
-                    # Store model
-                    self.models[market] = model
                 
-                # Save models if path provided
+                # Save model if path provided
                 if save_path:
-                    save_path.mkdir(parents=True, exist_ok=True)
-                    if market in ['corners', 'cards']:
-                        joblib.dump(self.regression_models[market], save_path / f"{market}_model.joblib")
-                    else:
-                        joblib.dump(self.models[market], save_path / f"{market}_model.joblib")
-                    joblib.dump(scaler, save_path / f"{market}_scaler.joblib")
+                    self._save_model(market, save_path)
                 
-                # Log metrics
-                logger.info(f"\n{market} metrics:")
-                for metric, value in metrics[market].items():
-                    logger.info(f"- {metric}: {value:.4f}")
+                # Log results
+                self._log_results(market, metrics[market])
                 
             except Exception as e:
                 logger.error(f"Error training {market} model: {str(e)}", exc_info=True)
