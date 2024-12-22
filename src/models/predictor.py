@@ -541,12 +541,12 @@ class UnifiedPredictor:
         plt.close()
     
     def train(self, df: pd.DataFrame, save_path: Optional[Path] = None, test_mode: bool = False) -> Dict[str, Dict[str, float]]:
-        """Train models for all enabled markets using time-series validation.
+        """Train models for all enabled markets using time-series cross-validation.
         
         Args:
             df: DataFrame with features and targets
             save_path: Optional path to save trained models
-            test_mode: Whether running in test mode (allows fewer seasons)
+            test_mode: Whether running in test mode
             
         Returns:
             Dictionary with performance metrics for each market
@@ -559,63 +559,103 @@ class UnifiedPredictor:
         
         # Sort by date and validate seasons
         df = df.sort_values('Date')
-        seasons = df['Season'].unique()
-        logger.info(f"Training data spans {len(seasons)} seasons: {sorted(seasons)}")
+        seasons = sorted(df['Season'].unique())
+        logger.info(f"Training data spans {len(seasons)} seasons: {seasons}")
         
         if not test_mode and len(seasons) < 3:
             raise ValueError("Need at least 3 seasons for proper validation")
         elif test_mode and len(seasons) < 2:
             raise ValueError("Need at least 2 seasons even in test mode")
         
-        # Define training and test seasons
-        train_seasons = seasons[:-1]
-        test_season = seasons[-1]
-        logger.info(f"Using seasons {train_seasons} for training and season {test_season} for testing")
+        # Define validation windows
+        validation_windows = []
+        if test_mode:
+            # In test mode, use first season for training, second for testing
+            train_seasons = [seasons[0]]
+            test_season = seasons[1]
+            validation_windows.append((train_seasons, test_season))
+        else:
+            # Normal mode: use sliding windows
+            min_train_seasons = 2
+            for i in range(len(seasons) - min_train_seasons):
+                if i + min_train_seasons + 1 <= len(seasons):
+                    train_seasons = seasons[i:i+min_train_seasons]
+                    test_season = seasons[i+min_train_seasons]
+                    validation_windows.append((train_seasons, test_season))
         
-        # Train models for each market
+        logger.info(f"Created {len(validation_windows)} validation windows:")
+        for train_seasons, test_season in validation_windows:
+            logger.info(f"Train seasons: {train_seasons}, Test season: {test_season}")
+        
+        # Train models for each market using each validation window
         for market in self.config.markets:
             if not self.config.markets[market]:
                 logger.info(f"Skipping {market} market (disabled in config)")
                 continue
             
             try:
-                # Prepare data
-                X_train, X_test, y_train, y_test, feature_names = self._prepare_training_data(
-                    df, market, train_seasons, test_season
-                )
+                logger.info(f"\nTraining {market} model...")
+                market_metrics = []
+                seasonal_progression[market] = []
+                league_performance[market] = []
                 
-                # Train model and get metrics
-                if market in ['corners', 'cards']:
-                    metrics[market] = self._train_regression_model(
-                        market, X_train, X_test, y_train, y_test, feature_names
+                for train_seasons, test_season in validation_windows:
+                    logger.info(f"\nValidation window - Train: {train_seasons}, Test: {test_season}")
+                    
+                    # Prepare data for this validation window
+                    X_train, X_test, y_train, y_test, feature_names = self._prepare_training_data(
+                        df, market, train_seasons, test_season
                     )
-                    # Get predictions for seasonal progression analysis
-                    y_pred = self.regression_models[market].predict(X_test)
-                else:
-                    metrics[market] = self._train_classification_model(
-                        market, X_train, X_test, y_train, y_test, feature_names
+                    
+                    # Train model and get metrics
+                    if market in ['corners', 'cards']:
+                        window_metrics = self._train_regression_model(
+                            market, X_train, X_test, y_train, y_test, feature_names
+                        )
+                        # Get predictions for seasonal progression analysis
+                        y_pred = self.regression_models[market].predict(X_test)
+                    else:
+                        window_metrics = self._train_classification_model(
+                            market, X_train, X_test, y_train, y_test, feature_names
+                        )
+                        # Get predictions for seasonal progression analysis
+                        y_pred = self.models[market].predict(X_test)
+                    
+                    # Store metrics for this window
+                    market_metrics.append(window_metrics)
+                    
+                    # Analyze seasonal progression for this window
+                    test_df = df[df['Season'] == test_season]
+                    window_progression = self._analyze_seasonal_progression(
+                        test_df, y_test, y_pred, market
                     )
-                    # Get predictions for seasonal progression analysis
-                    y_pred = self.models[market].predict(X_test)
+                    seasonal_progression[market].append(window_progression)
+                    
+                    # Analyze league performance for this window
+                    window_league_perf = self._analyze_league_performance(
+                        test_df, y_test, y_pred, market
+                    )
+                    league_performance[market].append(window_league_perf)
                 
-                # Analyze seasonal progression
-                test_df = df[df['Season'] == test_season]
-                seasonal_progression[market] = self._analyze_seasonal_progression(
-                    test_df, y_test, y_pred, market
+                # Average metrics across all validation windows
+                metrics[market] = self._average_metrics(market_metrics)
+                
+                # Average seasonal progression across windows
+                seasonal_progression[market] = self._average_progression(
+                    seasonal_progression[market]
                 )
                 
-                # Analyze league performance
-                test_df = df[df['Season'] == test_season]
-                league_performance[market] = self._analyze_league_performance(
-                    test_df, y_test, y_pred, market
+                # Average league performance across windows
+                league_performance[market] = self._average_league_performance(
+                    league_performance[market]
                 )
+                
+                # Store feature importances
+                all_feature_importances[market] = self.feature_importances[market].head(10)
                 
                 # Save model if path provided
                 if save_path:
                     self._save_model(market, save_path)
-                
-                # Store feature importances for later
-                all_feature_importances[market] = self.feature_importances[market].head(10)
                 
             except Exception as e:
                 logger.error(f"Error training {market} model: {str(e)}", exc_info=True)
@@ -674,6 +714,75 @@ class UnifiedPredictor:
             logger.info(f"Saved league performance plot to {save_path}/league_performance.png")
         
         return metrics
+    
+    def _average_metrics(self, window_metrics: List[Dict[str, float]]) -> Dict[str, float]:
+        """Average metrics across validation windows."""
+        if not window_metrics:
+            return {}
+        
+        # Initialize with keys from first window
+        avg_metrics = {k: 0.0 for k in window_metrics[0].keys()}
+        
+        # Sum up metrics
+        for metrics in window_metrics:
+            for k, v in metrics.items():
+                avg_metrics[k] += v
+        
+        # Calculate averages
+        n_windows = len(window_metrics)
+        return {k: v / n_windows for k, v in avg_metrics.items()}
+    
+    def _average_progression(self, window_progressions: List[Dict[int, float]]) -> Dict[int, float]:
+        """Average seasonal progression across validation windows."""
+        if not window_progressions:
+            return {}
+        
+        # Collect all match numbers
+        all_match_nums = set()
+        for prog in window_progressions:
+            all_match_nums.update(prog.keys())
+        
+        # Initialize averages
+        avg_progression = {match_num: 0.0 for match_num in all_match_nums}
+        counts = {match_num: 0 for match_num in all_match_nums}
+        
+        # Sum up values
+        for prog in window_progressions:
+            for match_num, value in prog.items():
+                avg_progression[match_num] += value
+                counts[match_num] += 1
+        
+        # Calculate averages
+        return {
+            match_num: value / counts[match_num]
+            for match_num, value in avg_progression.items()
+        }
+    
+    def _average_league_performance(self, window_performances: List[Dict[str, float]]) -> Dict[str, float]:
+        """Average league performance across validation windows."""
+        if not window_performances:
+            return {}
+        
+        # Collect all leagues
+        all_leagues = set()
+        for perf in window_performances:
+            all_leagues.update(perf.keys())
+        
+        # Initialize averages
+        avg_performance = {league: 0.0 for league in all_leagues}
+        counts = {league: 0 for league in all_leagues}
+        
+        # Sum up values
+        for perf in window_performances:
+            for league, value in perf.items():
+                avg_performance[league] += value
+                counts[league] += 1
+        
+        # Calculate averages
+        return {
+            league: value / counts[league]
+            for league, value in avg_performance.items()
+        }
     
     def predict(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """Make predictions for all enabled markets.
@@ -803,8 +912,11 @@ class UnifiedPredictor:
                 'Away_Prob': 'A'
             })
             
-            # Add confidence (highest probability)
-            predictions['Confidence'] = predictions[['Home_Prob', 'Draw_Prob', 'Away_Prob']].max(axis=1)
+            # Calculate confidence for match result using entropy-based uncertainty
+            probs_array = predictions[['Home_Prob', 'Draw_Prob', 'Away_Prob']].values
+            entropy = -np.sum(probs_array * np.log2(probs_array + 1e-10), axis=1)  # Add small epsilon to avoid log(0)
+            max_entropy = -np.log2(1/3)  # Maximum entropy for 3 classes with equal probabilities
+            predictions['Confidence'] = 1 - (entropy / max_entropy)  # Convert to confidence score
             
             # Add value indicators
             predictions['Home_Value'] = predictions['Home_Prob'] * df['B365H']
@@ -812,6 +924,7 @@ class UnifiedPredictor:
             predictions['Away_Value'] = predictions['Away_Prob'] * df['B365A']
             
             return predictions
+            
         elif market == 'over_under':
             predictions = pd.DataFrame({
                 'Date': df['Date'],
@@ -829,8 +942,11 @@ class UnifiedPredictor:
                 'Over_Prob': 'Over'
             })
             
-            # Add confidence (highest probability)
-            predictions['Confidence'] = predictions[['Under_Prob', 'Over_Prob']].max(axis=1)
+            # Calculate confidence for over/under using binary entropy
+            p = predictions['Over_Prob']
+            binary_entropy = -(p * np.log2(p + 1e-10) + (1-p) * np.log2(1-p + 1e-10))
+            max_binary_entropy = 1.0  # Maximum entropy for binary classification
+            predictions['Confidence'] = 1 - (binary_entropy / max_binary_entropy)
             
             # Add value indicators
             predictions['Under_Value'] = predictions['Under_Prob'] * df['B365<2.5']

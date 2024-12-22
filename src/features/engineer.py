@@ -399,10 +399,16 @@ class FeatureEngineer:
         # Process matches league by league
         for league in past_matches['League'].unique():
             league_matches = past_matches[past_matches['League'] == league]
-            teams = pd.concat([league_matches['HomeTeam'], league_matches['AwayTeam']]).unique()
             
-            # Initialize standings for this league
-            league_standings = pd.DataFrame(index=teams)
+            # Get all teams in the league for the current season
+            current_season = df[df['Date'] == current_date]['Season'].iloc[0]
+            season_teams = pd.concat([
+                df[(df['League'] == league) & (df['Season'] == current_season)]['HomeTeam'],
+                df[(df['League'] == league) & (df['Season'] == current_season)]['AwayTeam']
+            ]).unique()
+            
+            # Initialize standings for this league with all teams for the current season
+            league_standings = pd.DataFrame(index=season_teams)
             league_standings['points'] = 0
             league_standings['played'] = 0
             league_standings['won'] = 0
@@ -415,8 +421,16 @@ class FeatureEngineer:
             
             # Calculate standings
             for _, match in league_matches.iterrows():
+                # Skip matches from different seasons
+                if match['Season'] != current_season:
+                    continue
+                
                 home_team = match['HomeTeam']
                 away_team = match['AwayTeam']
+                
+                # Skip if either team is not in the current season's teams
+                if home_team not in season_teams or away_team not in season_teams:
+                    continue
                 
                 # Update matches played
                 league_standings.at[home_team, 'played'] += 1
@@ -457,17 +471,15 @@ class FeatureEngineer:
             # Store in dictionary
             standings_dict[league] = league_standings
         
-        # Combine all league standings
-        final_standings = pd.concat(standings_dict.values())
-        
         # Create a lookup dictionary for quick team-league position access
         position_lookup = {}
-        for idx in final_standings.index:
-            team, league = idx.rsplit('_', 1)
-            position_lookup[(team, league)] = {
-                'position': final_standings.loc[idx, 'position'],
-                'points': final_standings.loc[idx, 'points']
-            }
+        for league, standings in standings_dict.items():
+            for idx in standings.index:
+                team = idx.rsplit('_', 1)[0]  # Remove league suffix
+                position_lookup[(team, league)] = {
+                    'position': standings.loc[idx, 'position'],
+                    'points': standings.loc[idx, 'points']
+                }
         
         return position_lookup
 
@@ -475,6 +487,14 @@ class FeatureEngineer:
         """Add standings-based features."""
         df = df.copy()
         logger = logging.getLogger(__name__)
+        
+        # Initialize standings columns with default values
+        df['Home_League_Position'] = 20.0  # Default to bottom position
+        df['Away_League_Position'] = 20.0
+        df['Home_Points'] = 0.0
+        df['Away_Points'] = 0.0
+        df['Position_Diff'] = 0.0
+        df['Points_Diff'] = 0.0
         
         # Process each match with progress bar
         for idx, row in tqdm(df.iterrows(), desc="Processing standings", total=len(df), unit="match", leave=False):
@@ -513,10 +533,7 @@ class FeatureEngineer:
                     
                     logger.debug(f"Set {prefix}_League_Position={position}, {prefix}_Points={points}")
                 else:
-                    logger.warning(f"No standings found for {team} in {row['League']}")
-                    # Fill with defaults for new teams
-                    df.at[idx, f'{prefix}_League_Position'] = 20.0  # Default to bottom position
-                    df.at[idx, f'{prefix}_Points'] = 0.0
+                    logger.debug(f"No standings found for {team} in {row['League']}, using default values")
             
             # Add position and points differences
             home_pos = df.at[idx, 'Home_League_Position']

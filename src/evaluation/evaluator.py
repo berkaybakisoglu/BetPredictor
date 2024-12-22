@@ -10,6 +10,7 @@ import logging
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.config.config import BettingConfig
+from src.visualization.visualizer import ResultVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ class BettingEvaluator:
             'all_matches': {range_: {'wins': 0, 'total': 0, 'pnl': 0.0} 
                           for range_ in self.odds_ranges}
         }
+        
+        # Initialize visualizer
+        self.visualizer = ResultVisualizer(Path('output/visualizations'))
     
     def _calculate_bet_profit(self, bet_amount: float, odds: float, is_winner: bool) -> float:
         """Calculate profit/loss for a single bet.
@@ -73,6 +77,10 @@ class BettingEvaluator:
         """
         metrics = {}
         
+        # Add league information to actual_results if not present
+        if 'League' not in actual_results.columns:
+            actual_results['League'] = actual_results['Division']
+        
         # Evaluate match result predictions
         if 'match_result' in predictions:
             logger.info("\nMatch Result Accuracy:")
@@ -86,6 +94,13 @@ class BettingEvaluator:
                 **betting_metrics['selective'],
                 'all_matches': betting_metrics['all_matches']
             }
+            
+            # Plot feature importance if available
+            if hasattr(self, 'feature_importances') and 'match_result' in self.feature_importances:
+                self.visualizer.plot_feature_importance(
+                    self.feature_importances['match_result'],
+                    'match_result'
+                )
         
         # Evaluate over/under predictions
         if 'over_under' in predictions:
@@ -101,6 +116,13 @@ class BettingEvaluator:
                 **betting_metrics['selective'],
                 'all_matches': betting_metrics['all_matches']
             }
+            
+            # Plot feature importance if available
+            if hasattr(self, 'feature_importances') and 'over_under' in self.feature_importances:
+                self.visualizer.plot_feature_importance(
+                    self.feature_importances['over_under'],
+                    'over_under'
+                )
         
         # Evaluate corners predictions
         if 'corners' in predictions:
@@ -116,6 +138,13 @@ class BettingEvaluator:
                 **betting_metrics['selective'],
                 'all_matches': betting_metrics['all_matches']
             }
+            
+            # Plot feature importance if available
+            if hasattr(self, 'feature_importances') and 'corners' in self.feature_importances:
+                self.visualizer.plot_feature_importance(
+                    self.feature_importances['corners'],
+                    'corners'
+                )
         
         # Evaluate cards predictions
         if 'cards' in predictions:
@@ -131,6 +160,26 @@ class BettingEvaluator:
                 **betting_metrics['selective'],
                 'all_matches': betting_metrics['all_matches']
             }
+            
+            # Plot feature importance if available
+            if hasattr(self, 'feature_importances') and 'cards' in self.feature_importances:
+                self.visualizer.plot_feature_importance(
+                    self.feature_importances['cards'],
+                    'cards'
+                )
+        
+        # Create bet history DataFrame
+        if self.bet_details:
+            bet_history = pd.DataFrame(self.bet_details)
+            
+            # Create comprehensive visualizations
+            self.visualizer.plot_pnl_evolution(bet_history)
+            self.visualizer.plot_win_rate_by_odds(bet_history)
+            self.visualizer.plot_roi_by_league(bet_history)
+            self.visualizer.plot_confidence_analysis(predictions)
+            
+            # Create summary report
+            self.visualizer.create_summary_report(bet_history, predictions)
         
         return metrics
     
@@ -285,7 +334,8 @@ class BettingEvaluator:
                             'odds': odds,
                             'stake': self.default_stake,
                             'profit': profit,
-                            'is_winner': is_winner
+                            'is_winner': is_winner,
+                            'league': actual_results.loc[idx, 'League']
                         })
                         
                         pnl.append(profit)
@@ -376,7 +426,8 @@ class BettingEvaluator:
                             'odds': odds,
                             'stake': self.default_stake,
                             'profit': profit,
-                            'is_winner': is_winner
+                            'is_winner': is_winner,
+                            'league': actual_results.loc[idx, 'League']
                         })
                         
                         pnl.append(profit)

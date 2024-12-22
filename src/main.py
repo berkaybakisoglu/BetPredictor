@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import sys
 import traceback
+import pandas as pd
 
 from src.config.config import Config, DataConfig, FeatureConfig, ModelConfig, BettingConfig
 from src.data.loader import DataLoader
@@ -208,9 +209,27 @@ def main() -> None:
                     else:
                         logger.info(f"- {metric}: {value}")
             
-            # Plot results
-            logger.info("Plotting results...")
-            evaluator.plot_performance(save_path=config.output_dir)
+            # Create visualizations using the visualizer
+            logger.info("Creating visualizations...")
+            if hasattr(evaluator, 'bet_details') and evaluator.bet_details:
+                bet_history = pd.DataFrame(evaluator.bet_details)
+                visualizer = evaluator.visualizer
+                
+                # Create all visualizations
+                visualizer.plot_pnl_evolution(bet_history)
+                visualizer.plot_win_rate_by_odds(bet_history)
+                visualizer.plot_roi_by_league(bet_history)
+                visualizer.plot_confidence_analysis(predictions)
+                
+                # Create summary report
+                visualizer.create_summary_report(bet_history, predictions)
+                
+                # Save betting details to CSV
+                evaluator.save_bet_details(Path(config.output_dir) / 'betting_results')
+                
+                logger.info(f"Visualizations saved to {config.output_dir}/visualizations")
+            else:
+                logger.warning("No betting history available for visualization")
     
     except Exception as e:
         logger.error("An error occurred: %s", str(e), exc_info=True)
