@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 from tqdm import tqdm
-from src.config.config import FeatureConfig
+from config.config import FeatureConfig
 import logging
 
 class FeatureEngineer:
@@ -192,44 +192,79 @@ class FeatureEngineer:
     
     def _add_h2h_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add head-to-head features."""
-        df = df.copy()
-        
-        df['TotalGoals'] = df['FTHG'] + df['FTAG']
-        df['TotalCorners'] = df['HC'] + df['AC']
-        
-        def get_h2h_stats(row: pd.Series) -> Dict[str, float]:
-            prev_matches = df[
+        def get_h2h_stats(row):
+            # Get previous matches between these teams
+            h2h_matches = df[
                 ((df['HomeTeam'] == row['HomeTeam']) & (df['AwayTeam'] == row['AwayTeam']) |
                  (df['HomeTeam'] == row['AwayTeam']) & (df['AwayTeam'] == row['HomeTeam'])) &
                 (df['Date'] < row['Date'])
-            ].sort_values('Date').tail(self.config.h2h_window)
+            ].sort_values('Date').tail(self.config.h2h_matches)
             
-            if len(prev_matches) == 0:
-                return {
-                    'H2H_Home_Wins': 0,
-                    'H2H_Away_Wins': 0,
-                    'H2H_Draws': 0,
-                    'H2H_Avg_Goals': 0,
-                    'H2H_Avg_Corners': 0
-                }
+            if len(h2h_matches) == 0:
+                return pd.Series({
+                    'h2h_matches': 0,
+                    'h2h_home_wins': 0,
+                    'h2h_draws': 0,
+                    'h2h_away_wins': 0,
+                    'h2h_home_goals': 0,
+                    'h2h_away_goals': 0,
+                    'h2h_total_goals': 0,
+                    'h2h_home_win_rate': 0,
+                    'h2h_draw_rate': 0,
+                    'h2h_away_win_rate': 0
+                })
             
+            # Calculate basic stats
+            home_team = row['HomeTeam']
             stats = {
-                'H2H_Home_Wins': sum((prev_matches['HomeTeam'] == row['HomeTeam']) & 
-                                   (prev_matches['FTR'] == 'H')) / len(prev_matches),
-                'H2H_Away_Wins': sum((prev_matches['HomeTeam'] == row['AwayTeam']) & 
-                                   (prev_matches['FTR'] == 'A')) / len(prev_matches),
-                'H2H_Draws': sum(prev_matches['FTR'] == 'D') / len(prev_matches),
-                'H2H_Avg_Goals': prev_matches['TotalGoals'].mean(),
-                'H2H_Avg_Corners': prev_matches['TotalCorners'].mean()
+                'h2h_matches': len(h2h_matches),
+                'h2h_home_wins': 0,
+                'h2h_draws': 0,
+                'h2h_away_wins': 0,
+                'h2h_home_goals': 0,
+                'h2h_away_goals': 0
             }
             
-            return stats
+            for _, match in h2h_matches.iterrows():
+                if match['HomeTeam'] == home_team:
+                    # Direct match
+                    home_goals = match['FTHG']
+                    away_goals = match['FTAG']
+                else:
+                    # Reverse match
+                    home_goals = match['FTAG']
+                    away_goals = match['FTHG']
+                
+                stats['h2h_home_goals'] += home_goals
+                stats['h2h_away_goals'] += away_goals
+                
+                if home_goals > away_goals:
+                    stats['h2h_home_wins'] += 1
+                elif home_goals < away_goals:
+                    stats['h2h_away_wins'] += 1
+                else:
+                    stats['h2h_draws'] += 1
+            
+            # Calculate derived stats
+            total_matches = float(stats['h2h_matches'])
+            stats['h2h_total_goals'] = stats['h2h_home_goals'] + stats['h2h_away_goals']
+            stats['h2h_home_win_rate'] = stats['h2h_home_wins'] / total_matches if total_matches > 0 else 0
+            stats['h2h_draw_rate'] = stats['h2h_draws'] / total_matches if total_matches > 0 else 0
+            stats['h2h_away_win_rate'] = stats['h2h_away_wins'] / total_matches if total_matches > 0 else 0
+            
+            return pd.Series(stats)
         
+        # Calculate H2H features for each match
         h2h_stats = df.apply(get_h2h_stats, axis=1)
-        for col in h2h_stats.iloc[0].keys():
-            df[col] = h2h_stats.apply(lambda x: x[col])
         
-        return df
+        # Add weighted versions of the features
+        for col in h2h_stats.columns:
+            if col != 'h2h_matches':
+                h2h_stats[f'{col}_weighted'] = h2h_stats[col] * (
+                    1 - np.exp(-self.config.h2h_weight_decay * h2h_stats['h2h_matches'])
+                )
+        
+        return pd.concat([df, h2h_stats], axis=1)
     
     def _add_form_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add form-based features with exponential decay."""
@@ -258,17 +293,17 @@ class FeatureEngineer:
                 general_results.append(result)
             
             df.loc[df['HomeTeam'] == team, 'Home_Form'] = [
-                self._calculate_form(home_results[:i][-self.config.form_window:])
+                self._calculate_form(home_results[:i][-self.config.form_matches:])
                 for i in range(1, len(home_results) + 1)
             ]
             
             df.loc[df['AwayTeam'] == team, 'Away_Form'] = [
-                self._calculate_form(away_results[:i][-self.config.form_window:])
+                self._calculate_form(away_results[:i][-self.config.form_matches:])
                 for i in range(1, len(away_results) + 1)
             ]
             
             general_form = [
-                self._calculate_form(general_results[:i][-self.config.form_window:])
+                self._calculate_form(general_results[:i][-self.config.form_matches:])
                 for i in range(1, len(general_results) + 1)
             ]
             
@@ -287,7 +322,7 @@ class FeatureEngineer:
         if not results:
             return 0.0
         
-        weights = [np.exp(-self.config.decay_factor * i) for i in range(len(results))]
+        weights = [np.exp(-self.config.form_weight_decay * i) for i in range(len(results))]
         points = [3 if r == 'W' else 1 if r == 'D' else 0 for r in results]
         return sum(w * p for w, p in zip(weights, points)) / sum(weights)
     
@@ -507,9 +542,6 @@ class FeatureEngineer:
                 away_matches['AC'].expanding().std().shift(1).fillna(0)
             )
         
-        if 'H2H_Avg_Corners' not in df.columns:
-            df['H2H_Avg_Corners'] = self._calculate_h2h_stat(df, ['HC', 'AC'], 'sum')
-        
         corner_features = [
             'Home_Corners_For_Avg', 'Home_Corners_Against_Avg',
             'Away_Corners_For_Avg', 'Away_Corners_Against_Avg',
@@ -518,8 +550,7 @@ class FeatureEngineer:
             'Home_Corners_For_Last5', 'Home_Corners_Against_Last5',
             'Away_Corners_For_Last5', 'Away_Corners_Against_Last5',
             'Home_Corner_Diff_Avg', 'Away_Corner_Diff_Avg',
-            'Home_Corner_Std', 'Away_Corner_Std',
-            'H2H_Avg_Corners'
+            'Home_Corner_Std', 'Away_Corner_Std'
         ]
         
         missing_features = [f for f in corner_features if f not in df.columns]

@@ -17,8 +17,8 @@
 \author{\IEEEauthorblockN{Berkay Bakisoglu}
 \IEEEauthorblockA{Department of Computer Engineering\\
 Ege University\\
-İzmir, Turkey\\
-Email: berkay.bakisoglu@ege.edu.tr}}
+Izmir, Turkey\\
+Email: 91230000563@ogrenci.ege.edu.tr}}
 
 \maketitle
 
@@ -56,120 +56,219 @@ Our research has two main goals:
 \item Investigation of system performance in different betting markets
 \end{itemize}
 
-\subsection{Related Work}
-Recent research has demonstrated the potential of machine learning in football match prediction. Hub{\'a}{\v{c}}ek et al. \cite{hubacek2019exploiting} showed the effectiveness of machine learning approaches for match outcome prediction, while Brown et al. \cite{brown2018machine} provided evidence of successful ML applications in basketball prediction. The importance of feature engineering in soccer prediction was highlighted by Williams and Li \cite{williams2010simple}, who developed effective feature sets for major soccer leagues.
+\section{Previous Works}
+Sports betting prediction using machine learning has gained significant attention in recent years. Terawong \& Cliff (2024) demonstrated the effectiveness of XGBoost in learning profitable betting strategies through an agent-based model of a sports betting exchange. Their work showed that machine learning models could learn strategies that outperform traditional betting approaches, achieving an overall accuracy of 88\%.
 
-The challenge of accurate match prediction has been extensively studied. Spann and Skiera \cite{spann2009sports} compared different prediction methods, providing insights into forecasting accuracy. In terms of methodology, Haghighat et al. \cite{haghighat2013review} reviewed various data mining techniques for sports prediction, while Constantinou \cite{constantinou2019dolores} demonstrated the effectiveness of a unified model for global football prediction.
+Bunker \& Thabtah (2017) proposed a structured framework for sports result prediction (SRP-CRISP-DM) that emphasizes the importance of proper data preprocessing and feature engineering. Their framework distinguishes between match-related and external features, and advocates for preserving temporal order in model evaluation.
 
-Our work builds upon these foundations while introducing several novel elements:
+These works highlight two key aspects in sports betting prediction: the importance of sophisticated machine learning approaches and the need for proper data handling and evaluation methodologies. Our work builds upon these foundations while introducing several novel elements:
+
 \begin{itemize}
-\item Integration of multiple prediction models in a unified framework
-\item Comprehensive feature engineering incorporating team performance dynamics
-\item Advanced evaluation metrics for prediction accuracy
+    \item A hierarchical prediction system that leverages correlations between different betting markets
+    \item Enhanced feature engineering incorporating both historical statistics and market-derived probabilities
+    \item A comprehensive evaluation framework that considers both prediction accuracy and betting profitability
 \end{itemize}
 
 \section{Methodology}
-Our approach evolved through careful consideration of the challenges in football match prediction. We chose a modular architecture to allow for continuous improvement and adaptation:
-
-\subsection{System Architecture}
-Our prediction system follows a modular architecture designed to handle both match prediction and betting applications. The system consists of five main components:
-
-\begin{itemize}
-\item \textbf{Data Loading and Preprocessing Module}
-\item \textbf{Feature Engineering Pipeline}
-\item \textbf{Unified Prediction System}
-\item \textbf{Performance Evaluation Framework}
-\item \textbf{Betting Application Module}
-\end{itemize}
+Our approach introduces a novel hierarchical prediction system for football betting markets. The system consists of four main components:
 
 \subsection{Data Processing}
-One of our first challenges was dealing with the messy reality of sports data. Building on previous work \cite{hubacek2019exploiting}, we developed a processing pipeline that addresses common real-world issues:
+The data processing pipeline handles multiple seasons of football match data from various European leagues. Our dataset contains comprehensive match statistics and betting odds, including:
 
-\subsubsection{Data Sources}
-The dataset comprises historical match data from major European football leagues, similar to the approach used by Constantinou \cite{constantinou2019dolores}:
 \begin{itemize}
-\item Match results and statistics from top-tier leagues
-\item Historical odds from Bet365
-\item Extensive historical data spanning 14 seasons (2010-2024)
-\end{itemize}
-
-\subsubsection{Data Quality Assurance}
-To ensure data integrity and consistency:
-\begin{itemize}
-\item Systematic validation of match data completeness across all seasons
-\item Validation of Bet365 odds availability and ranges
-\item Long-term temporal consistency verification
-\item Cross-validation of match statistics across seasons
-\end{itemize}
-
-\subsubsection{Data Preprocessing}
-The preprocessing methodology includes:
-\begin{itemize}
-\item Temporal alignment of match data
-\item Statistical normalization of features
-\item Handling of missing odds data through predefined rules
-\item Derivation of composite performance metrics
+    \item \textbf{Match Statistics}: Full-time (FT) and half-time (HT) scores, shots on target (HST/AST), fouls (HF/AF), corners (HC/AC), and cards (HY/AY/HR/AR)
+    \item \textbf{Betting Odds}: Pre-match odds from multiple bookmakers (Bet365, BetWin, Betfair, etc.) for:
+        \begin{itemize}
+            \item Match results (Home/Draw/Away)
+            \item Over/Under 2.5 goals
+            \item Asian Handicap markets
+            \item Corner markets
+        \end{itemize}
 \end{itemize}
 
 \subsection{Feature Engineering}
-The feature engineering methodology incorporates multiple aspects of match performance:
+Our feature engineering pipeline creates sophisticated predictive features from the raw data:
 
-\subsubsection{Performance Features}
 \begin{itemize}
-\item Historical match outcome analysis
-\item Team performance metrics and form indicators
-\item Head-to-head statistical analysis
-\item League position and performance trends
+    \item \textbf{Team Performance Features}:
+        \begin{itemize}
+            \item Recent form with exponential decay weights
+            \item Rolling averages for goals scored/conceded
+            \item Team-specific metrics (clean sheets, scoring patterns)
+            \item Days since last game for recovery analysis
+        \end{itemize}
+    
+    \item \textbf{Market-Derived Features}:
+        \begin{itemize}
+            \item Implied probabilities from betting odds
+            \item Market overround calculations
+            \item Value betting indicators
+            \item Favorite/underdog identification
+        \end{itemize}
+    
+    \item \textbf{League Position Features}:
+        \begin{itemize}
+            \item Dynamic league standings
+            \item Points and position differences
+            \item Goal difference rankings
+            \item Form-based league performance
+        \end{itemize}
+    
+    \item \textbf{Match-Specific Features}:
+        \begin{itemize}
+            \item Head-to-head statistics
+            \item Home/Away performance metrics
+            \item Referee influence indicators
+            \item Derby match identification
+        \end{itemize}
+    
+    \item \textbf{Advanced Statistical Features}:
+        \begin{itemize}
+            \item Standard deviation of performance metrics
+            \item Weighted historical encounters
+            \item Seasonal progression indicators
+            \item League-specific normalization
+        \end{itemize}
 \end{itemize}
 
-\subsection{Prediction System}
-The system is being designed with a unified interface while exploring different model architectures, inspired by recent advances in sports prediction \cite{constantinou2019dolores}:
+The feature engineering process includes careful handling of temporal aspects to prevent data leakage, with all features calculated using only historical data available before each match. Feature importance analysis guides the selection of most relevant predictors for each market.
 
-\subsubsection{Proposed Model Architectures}
-Several approaches are under investigation:
-\begin{itemize}
-\item Random Forest-based models for match outcome classification
-\item LightGBM implementation for score prediction
-\item Ensemble methods for combining multiple predictors
-\item Deep learning architectures (under consideration)
-\end{itemize}
+\subsection{Hierarchical Prediction System}
+The core of our system is a novel hierarchical approach that combines multiple prediction models:
 
-\subsubsection{Planned Training Process}
-The training process will include:
 \begin{itemize}
-\item Cross-validation for model selection and validation
-\item Hyperparameter optimization strategies
-\item Feature importance evaluation methods
-\item Model persistence mechanisms
+    \item \textbf{Base Predictors}: Specialized models for corners and cards using LightGBM and Random Forest
+    \item \textbf{Enhanced Match Predictor}: A final classifier that incorporates predictions from base models
+    \item \textbf{Confidence Estimation}: Uncertainty quantification using model-specific techniques
 \end{itemize}
 
 \subsection{Evaluation Framework}
-Our evaluation framework addresses both prediction accuracy and betting applications:
+Our evaluation framework provides comprehensive assessment through:
 
-\subsubsection{Prediction Metrics}
-Following the methodology of Brown et al. \cite{brown2018machine}, we employ:
 \begin{itemize}
-\item Classification metrics (accuracy, precision, recall, F1-score)
-\item Calibration analysis
-\item Feature importance rankings
+    \item \textbf{Time-Series Validation}: Proper handling of temporal dependencies
+    \item \textbf{Market-Specific Metrics}: Tailored evaluation metrics for each prediction target
+    \item \textbf{League-Specific Analysis}: Performance breakdown by league and season
+    \item \textbf{Visualization Tools}: Advanced plotting capabilities for result analysis
 \end{itemize}
 
-\subsubsection{Performance Analysis}
-The framework includes visualization capabilities for:
+\section{Experimental Studies}
+\subsection{Dataset and Implementation Details}
+\subsubsection{Dataset Characteristics}
+Our dataset comprises historical football match data from major European leagues:
 \begin{itemize}
-\item Prediction accuracy trends over time
-\item League-specific performance analysis
-\item Feature importance visualization
-\item Model confidence analysis
+\item \textbf{Data Source}: Historical match data and betting odds from 2010 to 2024, football-data.co.uk
+\item \textbf{Dataset Size}: 15 seasons of data across multiple leagues
+\item \textbf{Features}: Over 30 features per match including:
+    \begin{itemize}
+    \item Match statistics (goals, corners, cards)
+    \item Team performance metrics
+    \item Historical head-to-head records
+    \item Betting odds from Bet365
+    \end{itemize}
+\item \textbf{File Format}: Mix of .xls and .xlsx files, organized by season and league
 \end{itemize}
 
-\subsubsection{Betting Application Analysis}
-For betting applications, we will analyze:
+\subsubsection{Implementation Environment}
+The system was implemented using the following technologies:
 \begin{itemize}
-\item Relationship between prediction confidence and betting success
-\item Model performance in different betting markets
-\item Risk assessment metrics
-\item Return on investment potential
+\item \textbf{Programming Language}: Python 3.10+
+\item \textbf{Key Libraries}:
+    \begin{itemize}
+    \item scikit-learn (for Random Forest models)
+    \item LightGBM (for gradient boosting)
+    \item pandas (for data manipulation)
+    \item numpy (for numerical operations)
+    \item matplotlib and seaborn (for visualization)
+    \end{itemize}
+\item \textbf{Development Environment}: Pycharm
+\end{itemize}
+
+\subsection{Training Methodology}
+\subsubsection{Data Preprocessing}
+Our preprocessing pipeline includes:
+\begin{itemize}
+\item Temporal alignment of match data
+\item Feature scaling using StandardScaler
+\item Handling of missing values through predefined rules
+\item Validation of data completeness and consistency
+\end{itemize}
+
+\subsubsection{Cross-Validation Strategy}
+We implemented a time-series based cross-validation approach:
+\begin{itemize}
+\item \textbf{Training Mode}:
+    \begin{itemize}
+    \item Minimum 3 seasons required for validation
+    \item Sliding window approach for season selection
+    \item Sequential split to maintain temporal order
+    \end{itemize}
+\item \textbf{Test Mode}:
+    \begin{itemize}
+    \item 80\% training, 20\% testing split
+    \item Configurable test size parameter
+    \item Rapid prototyping capabilities
+    \end{itemize}
+\end{itemize}
+
+\subsection{Model Parameters}
+\subsubsection{Random Forest Configuration}
+For classification tasks (match results):
+\begin{itemize}
+\item n\_estimators: 200
+\item max\_depth: 15
+\item min\_samples\_split: 10
+\item min\_samples\_leaf: 5
+\item class\_weight: 'balanced'
+\end{itemize}
+
+\subsubsection{LightGBM Configuration}
+For regression tasks (corner-card prediction):
+\begin{itemize}
+\item n\_estimators: 500
+\item learning\_rate: 0.01
+\item num\_leaves: 31
+\item max\_depth: 8
+\item min\_child\_samples: 20
+\end{itemize}
+
+\subsection{Performance Metrics}
+We evaluate our models using multiple metrics:
+\begin{itemize}
+\item \textbf{Classification Tasks}:
+    \begin{itemize}
+    \item Accuracy
+    \item Precision
+    \item Recall
+    \item F1-score
+    \end{itemize}
+\item \textbf{Regression Tasks}:
+    \begin{itemize}
+    \item Mean Squared Error (MSE)
+    \item Root Mean Squared Error (RMSE)
+    \item Mean Absolute Error (MAE)
+    \item R-squared (R2)
+    \end{itemize}
+\end{itemize}
+
+\subsection{Analysis Tools}
+Our evaluation framework includes:
+\begin{itemize}
+\item \textbf{Seasonal Progression Analysis}:
+    \begin{itemize}
+    \item Tracking prediction accuracy over time
+    \item Analyzing model adaptation to season changes
+    \end{itemize}
+\item \textbf{League-Specific Analysis}:
+    \begin{itemize}
+    \item Performance comparison across leagues
+    \item League-specific feature importance
+    \end{itemize}
+\item \textbf{Feature Importance Analysis}:
+    \begin{itemize}
+    \item Ranking of most influential features
+    \item Market-specific feature analysis
+    \end{itemize}
 \end{itemize}
 
 \section{Experimental Results}

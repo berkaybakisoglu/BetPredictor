@@ -9,8 +9,8 @@ from datetime import datetime
 import logging
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from src.config.config import BettingConfig
-from src.visualization.visualizer import ResultVisualizer
+from config.config import BettingConfig
+from visualization.visualizer import ResultVisualizer
 
 logger = logging.getLogger(__name__)
 

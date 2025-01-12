@@ -12,7 +12,7 @@ from sklearn.metrics import (
 )
 import joblib
 from lightgbm import LGBMRegressor
-from src.config.config import ModelConfig
+from config.config import ModelConfig
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -527,18 +527,21 @@ class UnifiedPredictor:
         
         if not test_mode and len(seasons) < 3:
             raise ValueError("Need at least 3 seasons for proper validation")
-        elif test_mode and len(seasons) < 2:
-            raise ValueError("Need at least 2 seasons even in test mode")
         
         # Define validation windows
         validation_windows = []
         if test_mode:
-            # In test mode, use first season for training, second for testing
-            train_seasons = [seasons[0]]
-            test_season = seasons[1]
-            validation_windows.append((train_seasons, test_season))
+            # In test mode, use 80% of data for training, 20% for testing
+            train_size = int(len(df) * 0.8)
+            train_data = df.iloc[:train_size]
+            test_data = df.iloc[train_size:]
+            train_seasons = sorted(train_data['Season'].unique())
+            test_seasons = sorted(test_data['Season'].unique())
+            validation_windows.append((train_seasons, test_seasons[-1]))
         else:
-            # Normal mode: use sliding windows
+            # Normal mode: use sliding windows with minimum 3 seasons
+            if len(seasons) < 3:
+                raise ValueError("Need at least 3 seasons for proper validation in normal mode")
             min_train_seasons = 2
             for i in range(len(seasons) - min_train_seasons):
                 if i + min_train_seasons + 1 <= len(seasons):
