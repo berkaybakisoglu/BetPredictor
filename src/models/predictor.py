@@ -63,26 +63,20 @@ class UnifiedPredictor:
             'Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb'
         ]
         
-        # Enhanced corner features (only those we can reliably calculate)
         corner_features = [
-            # Basic corner stats
             'Home_Corners_For_Avg', 'Home_Corners_Against_Avg',
             'Away_Corners_For_Avg', 'Away_Corners_Against_Avg',
             'H2H_Avg_Corners',
             
-            # Recent form corner stats
             'Home_Corners_For_Last5', 'Home_Corners_Against_Last5',
             'Away_Corners_For_Last5', 'Away_Corners_Against_Last5',
             
-            # Corner differentials
-            'Home_Corner_Diff_Avg',  # Corners For - Against
+            'Home_Corner_Diff_Avg',
             'Away_Corner_Diff_Avg',
             
-            # Home/Away specific performance
             'Home_Corners_For_Last3', 'Home_Corners_Against_Last3',
             'Away_Corners_For_Last3', 'Away_Corners_Against_Last3',
             
-            # Consistency metrics
             'Home_Corner_Std', 'Away_Corner_Std'
         ]
         
@@ -91,7 +85,6 @@ class UnifiedPredictor:
             'Home_Cards_Last5', 'Away_Cards_Last5'
         ]
         
-        # Define feature sets for each market
         return {
             'match_result': base_features + [
                 'Home_League_Position', 'Away_League_Position',
@@ -117,15 +110,12 @@ class UnifiedPredictor:
         Returns:
             Tuple of (X_train_scaled, X_test_scaled, y_train, y_test)
         """
-        # Get features and target
         X = df[self.feature_sets[market]].copy()
         y = self._get_target(df, market)
         
-        # Ensure X and y are aligned after filtering invalid targets
         valid_indices = y.index
         X = X.loc[valid_indices]
         
-        # Log feature information
         logger.info(f"Features used ({len(self.feature_sets[market])}):")
         for feature in self.feature_sets[market]:
             logger.info(f"- {feature}")
@@ -137,13 +127,11 @@ class UnifiedPredictor:
         if len(X) < self.config.min_training_samples:
             raise ValueError(f"Insufficient training data for {market} after filtering")
         
-        # Split data
         X_train = X[df['Season'].isin(train_seasons)]
         y_train = y[df['Season'].isin(train_seasons)]
         X_test = X[df['Season'] == test_season]
         y_test = y[df['Season'] == test_season]
         
-        # Scale features
         self.scalers[market] = StandardScaler()
         X_train_scaled = self.scalers[market].fit_transform(X_train)
         X_test_scaled = self.scalers[market].transform(X_test)
@@ -166,8 +154,6 @@ class UnifiedPredictor:
             Dictionary of metrics
         """
         if market == 'corners':
-            # Use LightGBM for corners prediction
-            # Initialize model with optimized parameters
             self.regression_models[market] = LGBMRegressor(
                 n_estimators=500,
                 learning_rate=0.01,
@@ -181,7 +167,6 @@ class UnifiedPredictor:
                 random_state=42
             )
         else:
-            # Use Random Forest for other regression tasks
             self.regression_models[market] = RandomForestRegressor(
                 n_estimators=200,
                 max_depth=15,
@@ -190,13 +175,10 @@ class UnifiedPredictor:
                 random_state=42
             )
         
-        # Train model
         self.regression_models[market].fit(X_train, y_train)
         
-        # Make predictions
         y_pred = self.regression_models[market].predict(X_test)
         
-        # Calculate metrics
         metrics = {
             'mse': mean_squared_error(y_test, y_pred),
             'rmse': np.sqrt(mean_squared_error(y_test, y_pred)),
@@ -204,7 +186,6 @@ class UnifiedPredictor:
             'r2': r2_score(y_test, y_pred)
         }
         
-        # Calculate feature importance
         if isinstance(self.regression_models[market], LGBMRegressor):
             importance = self.regression_models[market].feature_importances_
         else:
@@ -219,20 +200,6 @@ class UnifiedPredictor:
     
     def _train_classification_model(self, market: str, X_train: np.ndarray, X_test: np.ndarray, 
                                   y_train: np.ndarray, y_test: np.ndarray, feature_names: pd.Index) -> Dict[str, float]:
-        """Train classification model for match result/over-under markets.
-        
-        Args:
-            market: Market name
-            X_train: Training features
-            X_test: Test features
-            y_train: Training targets
-            y_test: Test targets
-            feature_names: Names of features
-            
-        Returns:
-            Dictionary of metrics
-        """
-        # Initialize model
         self.models[market] = RandomForestClassifier(
             n_estimators=200,
             max_depth=15,
@@ -242,13 +209,9 @@ class UnifiedPredictor:
             random_state=42
         )
         
-        # Train model
         self.models[market].fit(X_train, y_train)
-        
-        # Make predictions
         y_pred = self.models[market].predict(X_test)
         
-        # Calculate metrics
         metrics = {
             'accuracy': accuracy_score(y_test, y_pred),
             'precision': precision_score(y_test, y_pred, average='weighted'),
@@ -985,28 +948,19 @@ class UnifiedPredictor:
             # Get predictions from all trees
             trees = model.estimators_
             tree_preds = np.array([tree.predict(X_scaled) for tree in trees])
-            
-            # Calculate standard deviation across trees (lower std = higher confidence)
             std = np.std(tree_preds, axis=0)
             max_std = np.max(std) if len(std) > 0 else 1
-            
-            # Convert to confidence score (1 - normalized std)
             confidence = 1 - (std / max_std)
             
-        else:  # LightGBM
-            # For LightGBM, we'll use the prediction standard deviation
-            # from built-in method if available, otherwise return uniform confidence
+        else:
             try:
-                # Make predictions with standard deviation
                 pred_mean = model.predict(X_scaled)
-                
-                # Calculate relative deviation from mean as confidence
                 abs_dev = np.abs(pred_mean - np.mean(pred_mean))
                 max_dev = np.max(abs_dev) if len(abs_dev) > 0 else 1
                 confidence = 1 - (abs_dev / max_dev)
                 
             except Exception as e:
                 logger.warning(f"Could not calculate confidence for LightGBM model: {str(e)}")
-                confidence = np.ones(len(X_scaled)) * 0.5  # Default medium confidence
+                confidence = np.ones(len(X_scaled)) * 0.5
         
         return confidence

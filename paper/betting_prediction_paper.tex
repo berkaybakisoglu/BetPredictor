@@ -1,0 +1,231 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,fit}
+
+\begin{document}
+
+\title{A Machine Learning Approach for Football Match Prediction Using Comprehensive Feature Engineering\\
+\large{Preliminary Report}}
+
+\author{\IEEEauthorblockN{Berkay Bakisoglu}
+\IEEEauthorblockA{Department of Computer Engineering\\
+Ege University\\
+İzmir, Turkey\\
+Email: berkay.bakisoglu@ege.edu.tr}}
+
+\maketitle
+
+\begin{abstract}
+In this paper, we explore the development of a machine learning-based match prediction system for football. Our primary goal is to create an accurate prediction system that can effectively forecast match outcomes across different leagues. We propose a comprehensive approach that combines feature engineering with various machine learning models, processing extensive historical match data (2010-2024) with particular attention to team performance patterns and historical statistics. While this is a preliminary report, our initial analysis suggests promising directions not only for accurate match prediction but also for potential applications in betting markets. We discuss our methodology, current progress, and planned experiments for validating our approach.
+\end{abstract}
+
+\section{Introduction}
+Football match prediction presents a complex challenge for machine learning applications. Despite the abundance of historical match data and statistics, accurately predicting match outcomes remains difficult due to the numerous variables involved and the dynamic nature of team performance. Our research began with the goal of developing a reliable match prediction system that can effectively process historical data and identify patterns in team performance. Beyond the primary goal of accurate prediction, we also aim to explore whether such a system could be effectively applied in betting scenarios.
+
+\subsection{Problem Statement}
+Through our initial research, we identified several key challenges:
+\begin{itemize}
+\item Extracting meaningful patterns from complex match statistics and historical data
+\item Developing models that can adapt to changing team performance and form
+\item Creating effective evaluation methods that consider both prediction accuracy and consistency
+\item Exploring the practical applications of accurate predictions in betting contexts
+\end{itemize}
+
+\subsection{Research Objectives}
+Our research has two main goals:
+
+\subsubsection{Primary Objectives}
+\begin{itemize}
+\item Development of an accurate match prediction system for multiple leagues
+\item Implementation of comprehensive feature engineering focusing on team performance metrics
+\item Creation of robust evaluation metrics for prediction accuracy
+\item Analysis of different machine learning approaches for match prediction
+\end{itemize}
+
+\subsubsection{Secondary Objectives}
+\begin{itemize}
+\item Evaluation of prediction system's applicability to betting scenarios
+\item Analysis of prediction confidence in relation to betting decisions
+\item Investigation of system performance in different betting markets
+\end{itemize}
+
+\subsection{Related Work}
+Recent research has demonstrated the potential of machine learning in football match prediction. Hub{\'a}{\v{c}}ek et al. \cite{hubacek2019exploiting} showed the effectiveness of machine learning approaches for match outcome prediction, while Brown et al. \cite{brown2018machine} provided evidence of successful ML applications in basketball prediction. The importance of feature engineering in soccer prediction was highlighted by Williams and Li \cite{williams2010simple}, who developed effective feature sets for major soccer leagues.
+
+The challenge of accurate match prediction has been extensively studied. Spann and Skiera \cite{spann2009sports} compared different prediction methods, providing insights into forecasting accuracy. In terms of methodology, Haghighat et al. \cite{haghighat2013review} reviewed various data mining techniques for sports prediction, while Constantinou \cite{constantinou2019dolores} demonstrated the effectiveness of a unified model for global football prediction.
+
+Our work builds upon these foundations while introducing several novel elements:
+\begin{itemize}
+\item Integration of multiple prediction models in a unified framework
+\item Comprehensive feature engineering incorporating team performance dynamics
+\item Advanced evaluation metrics for prediction accuracy
+\end{itemize}
+
+\section{Methodology}
+Our approach evolved through careful consideration of the challenges in football match prediction. We chose a modular architecture to allow for continuous improvement and adaptation:
+
+\subsection{System Architecture}
+Our prediction system follows a modular architecture designed to handle both match prediction and betting applications. The system consists of five main components:
+
+\begin{itemize}
+\item \textbf{Data Loading and Preprocessing Module}
+\item \textbf{Feature Engineering Pipeline}
+\item \textbf{Unified Prediction System}
+\item \textbf{Performance Evaluation Framework}
+\item \textbf{Betting Application Module}
+\end{itemize}
+
+\subsection{Data Processing}
+One of our first challenges was dealing with the messy reality of sports data. Building on previous work \cite{hubacek2019exploiting}, we developed a processing pipeline that addresses common real-world issues:
+
+\subsubsection{Data Sources}
+The dataset comprises historical match data from major European football leagues, similar to the approach used by Constantinou \cite{constantinou2019dolores}:
+\begin{itemize}
+\item Match results and statistics from top-tier leagues
+\item Historical odds from Bet365
+\item Extensive historical data spanning 14 seasons (2010-2024)
+\end{itemize}
+
+\subsubsection{Data Quality Assurance}
+To ensure data integrity and consistency:
+\begin{itemize}
+\item Systematic validation of match data completeness across all seasons
+\item Validation of Bet365 odds availability and ranges
+\item Long-term temporal consistency verification
+\item Cross-validation of match statistics across seasons
+\end{itemize}
+
+\subsubsection{Data Preprocessing}
+The preprocessing methodology includes:
+\begin{itemize}
+\item Temporal alignment of match data
+\item Statistical normalization of features
+\item Handling of missing odds data through predefined rules
+\item Derivation of composite performance metrics
+\end{itemize}
+
+\subsection{Feature Engineering}
+The feature engineering methodology incorporates multiple aspects of match performance:
+
+\subsubsection{Performance Features}
+\begin{itemize}
+\item Historical match outcome analysis
+\item Team performance metrics and form indicators
+\item Head-to-head statistical analysis
+\item League position and performance trends
+\end{itemize}
+
+\subsection{Prediction System}
+The system is being designed with a unified interface while exploring different model architectures, inspired by recent advances in sports prediction \cite{constantinou2019dolores}:
+
+\subsubsection{Proposed Model Architectures}
+Several approaches are under investigation:
+\begin{itemize}
+\item Random Forest-based models for match outcome classification
+\item LightGBM implementation for score prediction
+\item Ensemble methods for combining multiple predictors
+\item Deep learning architectures (under consideration)
+\end{itemize}
+
+\subsubsection{Planned Training Process}
+The training process will include:
+\begin{itemize}
+\item Cross-validation for model selection and validation
+\item Hyperparameter optimization strategies
+\item Feature importance evaluation methods
+\item Model persistence mechanisms
+\end{itemize}
+
+\subsection{Evaluation Framework}
+Our evaluation framework addresses both prediction accuracy and betting applications:
+
+\subsubsection{Prediction Metrics}
+Following the methodology of Brown et al. \cite{brown2018machine}, we employ:
+\begin{itemize}
+\item Classification metrics (accuracy, precision, recall, F1-score)
+\item Calibration analysis
+\item Feature importance rankings
+\end{itemize}
+
+\subsubsection{Performance Analysis}
+The framework includes visualization capabilities for:
+\begin{itemize}
+\item Prediction accuracy trends over time
+\item League-specific performance analysis
+\item Feature importance visualization
+\item Model confidence analysis
+\end{itemize}
+
+\subsubsection{Betting Application Analysis}
+For betting applications, we will analyze:
+\begin{itemize}
+\item Relationship between prediction confidence and betting success
+\item Model performance in different betting markets
+\item Risk assessment metrics
+\item Return on investment potential
+\end{itemize}
+
+\section{Experimental Results}
+\subsection{Preliminary Setup}
+Our experimental framework addresses both prediction accuracy and betting applications:
+
+\subsubsection{Planned Experiments}
+We aim to answer several key questions:
+\begin{itemize}
+\item How do different models perform in predicting match outcomes?
+\item Which features are most important for accurate prediction?
+\item How does prediction accuracy vary across different leagues?
+\item What is the impact of historical data window size on prediction accuracy?
+\item How well do accurate predictions translate to betting success?
+\item Which types of predictions offer the best betting opportunities?
+\end{itemize}
+
+\subsubsection{Initial Data Analysis}
+Our preliminary investigation has focused on understanding our data:
+\begin{itemize}
+\item Analyzing match outcome distributions across leagues
+\item Understanding team performance patterns
+\item Examining Bet365 odds patterns and distributions
+\item Evaluating feature correlations with match outcomes
+\end{itemize}
+
+\subsection{Next Steps}
+Our immediate plans include:
+\begin{itemize}
+\item Testing different model architectures
+\item Analyzing feature importance across leagues
+\item Validating prediction accuracy with historical data
+\item Comparing our predictions with Bet365 implied probabilities
+\item Evaluating prediction confidence thresholds
+\item Testing performance using historical Bet365 odds
+\end{itemize}
+
+\section{Conclusion}
+This preliminary report represents our first steps toward developing an effective machine learning approach to football match prediction, with potential applications in betting markets. While we're still early in our research, our initial work has revealed both promising directions and significant challenges.
+
+\subsection{Current Progress}
+We've established some fundamental building blocks:
+\begin{itemize}
+\item A robust approach to processing historical match data
+\item A framework for extracting meaningful performance features
+\item Initial prediction model architectures
+\item A comprehensive evaluation methodology
+\end{itemize}
+
+\subsection{Future Work}
+Our next phase will focus on:
+\begin{itemize}
+\item Implementing and testing various prediction models
+\item Conducting extensive validation experiments
+\item Expanding our literature review
+\item Analyzing prediction performance across different leagues
+\end{itemize}
+
+\end{document} 

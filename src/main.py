@@ -16,11 +16,6 @@ from src.models.predictor import UnifiedPredictor
 from src.evaluation.evaluator import BettingEvaluator
 
 def setup_logging(output_dir: Path) -> None:
-    """Set up logging configuration.
-    
-    Args:
-        output_dir: Directory to save log file
-    """
     output_dir.mkdir(parents=True, exist_ok=True)
     
     logging.basicConfig(
@@ -35,66 +30,21 @@ def setup_logging(output_dir: Path) -> None:
     )
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
-    
-    Returns:
-        Parsed arguments
-    """
     parser = argparse.ArgumentParser(description='Run betting prediction system')
     
-    parser.add_argument(
-        '--data-dir',
-        type=Path,
-        default=Path('data/raw'),
-        help='Directory containing raw data files'
-    )
-    
-    parser.add_argument(
-        '--models-dir',
-        type=Path,
-        default=Path('models'),
-        help='Directory to save/load models'
-    )
-    
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path('output'),
-        help='Directory to save outputs'
-    )
-    
-    parser.add_argument(
-        '--train',
-        action='store_true',
-        help='Train new models'
-    )
-    
-    parser.add_argument(
-        '--evaluate',
-        action='store_true',
-        help='Evaluate model performance'
-    )
-    
-    parser.add_argument(
-        '--test-mode',
-        action='store_true',
-        help='Run in test mode with reduced dataset (last 2 seasons only)'
-    )
-    
-    parser.add_argument(
-        '--test-size',
-        type=float,
-        default=0.2,
-        help='Fraction of data to use in test mode (default: 0.2, i.e., 20%% of the data)'
-    )
+    parser.add_argument('--data-dir', type=Path, default=Path('data/raw'))
+    parser.add_argument('--models-dir', type=Path, default=Path('models'))
+    parser.add_argument('--output-dir', type=Path, default=Path('output'))
+    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--evaluate', action='store_true')
+    parser.add_argument('--test-mode', action='store_true')
+    parser.add_argument('--test-size', type=float, default=0.2)
     
     return parser.parse_args()
 
 def main() -> None:
-    """Main function to run the betting prediction system."""
     args = parse_args()
     
-    # Initialize config
     config = Config(
         data=DataConfig(data_dir=args.data_dir),
         features=FeatureConfig(),
@@ -104,36 +54,30 @@ def main() -> None:
         models_dir=args.models_dir
     )
     
-    # Set up logging
     setup_logging(config.output_dir)
     logger = logging.getLogger(__name__)
     
     try:
-        # Initialize components
         data_loader = DataLoader(config.data)
         feature_engineer = FeatureEngineer(config.features)
         predictor = UnifiedPredictor(config.model)
         evaluator = BettingEvaluator(config.betting)
         
-        # Load and preprocess data
         logger.info("Loading data...")
         train_data, test_data = data_loader.load_data(test_mode=args.test_mode)
         
         if args.test_mode:
             logger.info("Running in test mode with reduced dataset...")
-            # Get unique seasons
             seasons = sorted(train_data['Season'].unique())
             
             if len(seasons) > 2:
-                # Use only the last 2 seasons for test mode
+                # Use last 2 seasons for test mode
                 test_seasons = seasons[-2:]
                 logger.info(f"Using only seasons: {test_seasons}")
                 
-                # Filter data for test seasons
                 train_data = train_data[train_data['Season'].isin(test_seasons)]
                 test_data = test_data[test_data['Season'] >= test_seasons[0]]
                 
-                # Further reduce data size if specified
                 if args.test_size < 1.0:
                     train_size = int(len(train_data) * args.test_size)
                     test_size = int(len(test_data) * args.test_size)
@@ -143,18 +87,16 @@ def main() -> None:
                     
                     logger.info(f"Reduced dataset size - Train: {len(train_data)}, Test: {len(test_data)}")
         
-        # Create features
         logger.info("Engineering features...")
         train_data = feature_engineer.create_features(train_data, is_training=True)
         test_data = feature_engineer.create_features(test_data, is_training=False)
         
         if args.train:
-            # Train models
             logger.info("Training models...")
             metrics = predictor.train(train_data, save_path=config.models_dir, test_mode=args.test_mode)
             logger.info("Training metrics: %s", metrics)
             
-            # Plot feature importance for each market
+            # Plot feature importance
             logger.info("Plotting feature importance...")
             output_dir = Path("output/feature_importance")
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -171,28 +113,22 @@ def main() -> None:
                     plt.savefig(output_dir / f'{market}_feature_importance.png')
                     plt.close()
                     
-                    # Also save as CSV for detailed analysis
                     importance_df.to_csv(output_dir / f'{market}_feature_importance.csv', index=False)
                     
-                    # Log top 10 features
                     logger.info(f"\nTop 10 important features for {market}:")
                     for _, row in importance_df.head(10).iterrows():
                         logger.info(f"{row['feature']}: {row['importance']:.4f}")
         else:
-            # Load existing models
             logger.info("Loading existing models...")
             predictor.load_models(config.models_dir)
         
         if args.evaluate:
-            # Make predictions
             logger.info("Making predictions...")
             predictions = predictor.predict(test_data)
             
-            # Evaluate predictions
             logger.info("Evaluating predictions...")
             metrics = evaluator.evaluate(predictions, test_data)
             
-            # Log evaluation metrics
             logger.info("\nEvaluation metrics:")
             for market, market_metrics in metrics.items():
                 logger.info(f"\n{market.upper()}:")
@@ -209,22 +145,17 @@ def main() -> None:
                     else:
                         logger.info(f"- {metric}: {value}")
             
-            # Create visualizations using the visualizer
             logger.info("Creating visualizations...")
             if hasattr(evaluator, 'bet_details') and evaluator.bet_details:
                 bet_history = pd.DataFrame(evaluator.bet_details)
                 visualizer = evaluator.visualizer
                 
-                # Create all visualizations
                 visualizer.plot_pnl_evolution(bet_history)
                 visualizer.plot_win_rate_by_odds(bet_history)
                 visualizer.plot_roi_by_league(bet_history)
                 visualizer.plot_confidence_analysis(predictions)
                 
-                # Create summary report
                 visualizer.create_summary_report(bet_history, predictions)
-                
-                # Save betting details to CSV
                 evaluator.save_bet_details(Path(config.output_dir) / 'betting_results')
                 
                 logger.info(f"Visualizations saved to {config.output_dir}/visualizations")
