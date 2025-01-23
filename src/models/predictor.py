@@ -6,7 +6,7 @@ import json
 import logging
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error, r2_score, log_loss, precision_score, recall_score, f1_score
-from lightgbm import LGBMRegressor
+from lightgbm import LGBMRegressor, LGBMClassifier
 from sklearn.ensemble import RandomForestRegressor
 from .base_predictor import BasePredictor
 from sklearn.ensemble import RandomForestClassifier
@@ -113,17 +113,99 @@ class UnifiedPredictor(BasePredictor):
         return metrics
     
     def _train_classification_model(self, market, X_train, X_test, y_train, y_test, feature_names):
-        self.models[market] = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=15,
-            min_samples_split=10,
-            min_samples_leaf=5,
-            class_weight='balanced',
-            random_state=42
-        )
+        if market == 'match_result':
+            # For match results, use LightGBM with optimized parameters for better confidence
+            self.models[market] = LGBMClassifier(
+                n_estimators=1000,          # More trees
+                learning_rate=0.005,        # Slower learning rate
+                num_leaves=63,              # More leaves for complex patterns
+                max_depth=10,               # Deeper trees
+                min_child_samples=50,       # More samples per leaf for stability
+                subsample=0.7,              # Sample 70% of data per tree
+                colsample_bytree=0.7,       # Sample 70% of features per tree
+                reg_alpha=0.05,             # L1 regularization
+                reg_lambda=0.05,            # L2 regularization
+                random_state=42,
+                class_weight='balanced',
+                n_jobs=-1,
+                verbose=-1,
+                boosting_type='gbdt',       # Traditional gradient boosting
+                feature_fraction=0.8,       # Use 80% of features in each iteration
+                bagging_freq=5,            # Perform bagging every 5 iterations
+                bagging_fraction=0.8,      # Use 80% of data for bagging
+                min_data_in_leaf=30,       # Minimum samples in leaf for stability
+                max_bin=255               # More bins for continuous features
+            )
+        else:
+            # For binary classification (like over/under), keep RandomForest
+            self.models[market] = RandomForestClassifier(
+                n_estimators=200,
+                class_weight='balanced',
+                random_state=42,
+                n_jobs=-1
+            )
+        
+        # Convert target to numpy array to ensure proper shape
+        y_train = np.array(y_train)
+        y_test = np.array(y_test)
+        
+        # Check unique classes and their distribution
+        unique_classes = np.unique(y_train)
+        class_counts = {str(c): np.sum(y_train == c) for c in unique_classes}
+        if market == 'match_result':
+            if len(unique_classes) != 3:
+                logger.warning(f"Expected 3 classes for match_result, but found {len(unique_classes)}")
+                logger.warning(f"Unique classes: {unique_classes}")
+                logger.warning(f"Class distribution: {class_counts}")
+            else:
+                logger.info("Class distribution in training data:")
+                for cls, count in class_counts.items():
+                    logger.info(f"Class {cls}: {count} samples ({count/len(y_train)*100:.2f}%)")
+        
+        # Feature selection for match_result
+        if market == 'match_result':
+            # First fit a quick model to get feature importances
+            quick_model = LGBMClassifier(
+                n_estimators=100,
+                learning_rate=0.1,
+                random_state=42,
+                verbose=-1
+            )
+            quick_model.fit(X_train, y_train)
+            
+            # Select top features
+            importances = pd.DataFrame({
+                'feature': feature_names,
+                'importance': quick_model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            
+            top_features = importances.head(30)['feature'].tolist()  # Keep top 30 features
+            logger.info(f"\nSelected top {len(top_features)} features for match_result model:")
+            for f in top_features:
+                logger.info(f"- {f}")
+            
+            # Filter features
+            feature_mask = [f in top_features for f in feature_names]
+            X_train = X_train[:, feature_mask]
+            X_test = X_test[:, feature_mask]
+            feature_names = [f for f in feature_names if f in top_features]
         
         self.models[market].fit(X_train, y_train)
         y_pred = self.models[market].predict(X_test)
+        
+        # Ensure we have all classes in the predictions
+        if market == 'match_result':
+            proba = self.models[market].predict_proba(X_test)
+            if proba.shape[1] != 3:
+                logger.error(f"Model predicting {proba.shape[1]} classes instead of 3")
+                raise ValueError("Model not properly configured for 3-class prediction")
+            
+            # Log probability distribution statistics
+            prob_means = proba.mean(axis=0)
+            prob_stds = proba.std(axis=0)
+            logger.info("\nProbability distribution statistics:")
+            logger.info(f"Mean probabilities: Home={prob_means[0]:.3f}, Draw={prob_means[1]:.3f}, Away={prob_means[2]:.3f}")
+            logger.info(f"Std probabilities: Home={prob_stds[0]:.3f}, Draw={prob_stds[1]:.3f}, Away={prob_stds[2]:.3f}")
         
         metrics = {
             'accuracy': accuracy_score(y_test, y_pred),
@@ -132,12 +214,17 @@ class UnifiedPredictor(BasePredictor):
             'f1': f1_score(y_test, y_pred, average='weighted')
         }
         
+        if isinstance(self.models[market], LGBMClassifier):
+            importance = self.models[market].feature_importances_
+        else:
+            importance = self.models[market].feature_importances_
+            
         self.feature_importances[market] = pd.DataFrame({
             'feature': feature_names,
-            'importance': self.models[market].feature_importances_
+            'importance': importance
         }).sort_values('importance', ascending=False)
         
-        return metrics
+        return metrics, y_pred
     
     def train(self, df, save_path=None, test_mode=False):
         metrics = {}
@@ -174,6 +261,13 @@ class UnifiedPredictor(BasePredictor):
             
             try:
                 logger.info(f"\nTraining {market} model...")
+                
+                # Check if we have all required features
+                required_features = self.feature_sets[market]
+                missing_features = [f for f in required_features if f not in df.columns]
+                if missing_features:
+                    raise ValueError(f"Missing required features for {market}: {missing_features}")
+                
                 market_metrics = []
                 market_progressions = []
                 market_league_perfs = []
@@ -181,33 +275,37 @@ class UnifiedPredictor(BasePredictor):
                 for train_seasons, test_season in validation_windows:
                     logger.info(f"\nValidation window - Train: {train_seasons}, Test: {test_season}")
                     
-                    X_train, X_test, y_train, y_test, feature_names = self._prepare_training_data(
-                        df, market, train_seasons, test_season
-                    )
-                    
-                    if market in ['corners', 'cards']:
-                        window_metrics = self._train_regression_model(
-                            market, X_train, X_test, y_train, y_test, feature_names
+                    try:
+                        X_train, X_test, y_train, y_test, feature_names = self._prepare_training_data(
+                            df, market, train_seasons, test_season
                         )
-                        y_pred = self.regression_models[market].predict(X_test)
-                    else:
-                        window_metrics = self._train_classification_model(
-                            market, X_train, X_test, y_train, y_test, feature_names
+                        
+                        if market in ['corners', 'cards']:
+                            window_metrics = self._train_regression_model(
+                                market, X_train, X_test, y_train, y_test, feature_names
+                            )
+                            y_pred = self.regression_models[market].predict(X_test)
+                        else:
+                            window_metrics, y_pred = self._train_classification_model(
+                                market, X_train, X_test, y_train, y_test, feature_names
+                            )
+                        
+                        market_metrics.append(window_metrics)
+                        
+                        test_df = df[df['Season'] == test_season]
+                        window_progression = self._analyze_seasonal_progression(
+                            test_df, y_test, y_pred, market
                         )
-                        y_pred = self.models[market].predict(X_test)
-                    
-                    market_metrics.append(window_metrics)
-                    
-                    test_df = df[df['Season'] == test_season]
-                    window_progression = self._analyze_seasonal_progression(
-                        test_df, y_test, y_pred, market
-                    )
-                    market_progressions.append(window_progression)
-                    
-                    window_league_perf = self._analyze_league_performance(
-                        test_df, y_test, y_pred, market
-                    )
-                    market_league_perfs.append(window_league_perf)
+                        market_progressions.append(window_progression)
+                        
+                        window_league_perf = self._analyze_league_performance(
+                            test_df, y_test, y_pred, market
+                        )
+                        market_league_perfs.append(window_league_perf)
+                        
+                    except Exception as e:
+                        logger.error(f"Error in validation window for {market} model: {str(e)}", exc_info=True)
+                        raise
                 
                 metrics[market] = self._average_metrics(market_metrics)
                 
@@ -240,6 +338,7 @@ class UnifiedPredictor(BasePredictor):
                 
             except Exception as e:
                 logger.error(f"Error training {market} model: {str(e)}", exc_info=True)
+                logger.error(f"Skipping {market} market due to training error")
                 continue
         
         logger.info("\n" + "="*50)
@@ -273,19 +372,62 @@ class UnifiedPredictor(BasePredictor):
         
         for market in self.config.markets:
             if not self.config.markets[market]:
+                logger.info(f"Skipping {market} market (disabled in config)")
                 continue
             
-            X = df[self.feature_sets[market]]
-            X_scaled = self.scalers[market].transform(X)
-            
-            if market in ['corners', 'cards']:
-                if market in self.regression_models:
-                    pred_values = self.regression_models[market].predict(X_scaled)
-                    predictions[market] = self._format_regression_predictions(df, pred_values, market)
-            else:
-                if market in self.models:
-                    probs = self.models[market].predict_proba(X_scaled)
-                    predictions[market] = self._format_match_predictions(df, probs)
+            if market not in self.scalers:
+                logger.warning(f"No trained model found for {market} market. Skipping predictions.")
+                continue
+                
+            try:
+                X = df[self.feature_sets[market]]
+                X_scaled = self.scalers[market].transform(X)
+                
+                if market in ['corners', 'cards']:
+                    if market in self.regression_models:
+                        pred_values = self.regression_models[market].predict(X_scaled)
+                        predictions[market] = self._format_regression_predictions(df, pred_values, market)
+                    else:
+                        logger.warning(f"No regression model found for {market} market")
+                else:
+                    if market in self.models:
+                        probs = self.models[market].predict_proba(X_scaled)
+                        if market == 'match_result':
+                            # Ensure we include original odds in the output
+                            predictions[market] = pd.DataFrame({
+                                'Date': df['Date'],
+                                'HomeTeam': df['HomeTeam'],
+                                'AwayTeam': df['AwayTeam'],
+                                'Home_Prob': probs[:, 0],
+                                'Draw_Prob': probs[:, 1],
+                                'Away_Prob': probs[:, 2],
+                                'B365H': df['B365H'],  # Include original odds
+                                'B365D': df['B365D'],
+                                'B365A': df['B365A'],
+                                'Predicted': ['H' if p[0] > max(p[1], p[2]) else 'D' if p[1] > p[2] else 'A' for p in probs],
+                                'Confidence': self._calculate_confidence(probs)
+                            })
+                            
+                            # Calculate betting value
+                            predictions[market]['Home_Value'] = predictions[market]['Home_Prob'] * predictions[market]['B365H']
+                            predictions[market]['Draw_Value'] = predictions[market]['Draw_Prob'] * predictions[market]['B365D']
+                            predictions[market]['Away_Value'] = predictions[market]['Away_Prob'] * predictions[market]['B365A']
+                            
+                        else:  # over_under
+                            predictions[market] = pd.DataFrame({
+                                'Date': df['Date'],
+                                'HomeTeam': df['HomeTeam'],
+                                'AwayTeam': df['AwayTeam'],
+                                'Under_Prob': probs[:, 0],
+                                'Over_Prob': probs[:, 1],
+                                'Predicted': ['Under' if p[0] > p[1] else 'Over' for p in probs],
+                                'Confidence': self._calculate_confidence(probs)
+                            })
+                    else:
+                        logger.warning(f"No classification model found for {market} market")
+            except Exception as e:
+                logger.error(f"Error making predictions for {market} market: {str(e)}")
+                continue
         
         return predictions
     

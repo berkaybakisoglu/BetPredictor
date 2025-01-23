@@ -86,7 +86,15 @@ class BasePredictor:
             result_map = {'H': 0, 'D': 1, 'A': 2}
             valid_results = df['FTR'].isin(result_map.keys())
             if not valid_results.all():
-                logger.warning(f"Found {(~valid_results).sum()} invalid match results. These will be excluded from training.")
+                invalid_values = df.loc[~valid_results, 'FTR'].unique()
+                logger.warning(f"Found {(~valid_results).sum()} invalid match results with values {invalid_values}. These will be excluded from training.")
+            
+            # Ensure we have all classes in the data
+            unique_results = df.loc[valid_results, 'FTR'].unique()
+            missing_classes = set(result_map.keys()) - set(unique_results)
+            if missing_classes:
+                logger.warning(f"Missing classes in the data: {missing_classes}")
+            
             return df.loc[valid_results, 'FTR'].map(result_map)
         elif market == 'over_under':
             valid_goals = df['FTHG'].notna() & df['FTAG'].notna()

@@ -79,6 +79,9 @@ class DataLoader:
                 (data[col] <= self.config.max_odds)
             ]
         
+        # Sort by date to ensure chronological order
+        data = data.sort_values('Date').reset_index(drop=True)
+        
         return data
 
     def _split_data(self, data: pd.DataFrame, test_mode: bool) -> Tuple[pd.DataFrame, pd.DataFrame]:

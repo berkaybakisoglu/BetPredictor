@@ -282,21 +282,7 @@ class FeatureEngineer:
         # Validate no future matches in h2h data
         self._validate_no_leakage(match_date, h2h_matches, "head-to-head calculation")
         
-        if len(h2h_matches) > 0:
-            home_wins = len(h2h_matches[h2h_matches['FTR'] == 'H'])
-            draws = len(h2h_matches[h2h_matches['FTR'] == 'D'])
-            away_wins = len(h2h_matches[h2h_matches['FTR'] == 'A'])
-            total_matches = len(h2h_matches)
-            
-            return {
-                'home_win_rate': home_wins / total_matches,
-                'draw_rate': draws / total_matches,
-                'away_win_rate': away_wins / total_matches,
-                'home_goals': h2h_matches['FTHG'].mean(),
-                'away_goals': h2h_matches['FTAG'].mean(),
-                'total_goals': (h2h_matches['FTHG'] + h2h_matches['FTAG']).mean()
-            }
-        else:
+        if len(h2h_matches) == 0:
             return {
                 'home_win_rate': 1/3,
                 'draw_rate': 1/3,
@@ -305,6 +291,20 @@ class FeatureEngineer:
                 'away_goals': 0,
                 'total_goals': 0
             }
+            
+        home_wins = len(h2h_matches[h2h_matches['FTR'] == 'H'])
+        draws = len(h2h_matches[h2h_matches['FTR'] == 'D'])
+        away_wins = len(h2h_matches[h2h_matches['FTR'] == 'A'])
+        total_matches = len(h2h_matches)
+        
+        return {
+            'home_win_rate': home_wins / total_matches,
+            'draw_rate': draws / total_matches,
+            'away_win_rate': away_wins / total_matches,
+            'home_goals': h2h_matches['FTHG'].mean(),
+            'away_goals': h2h_matches['FTAG'].mean(),
+            'total_goals': (h2h_matches['FTHG'] + h2h_matches['FTAG']).mean()
+        }
 
     def _calculate_market_features(self, match):
         """Calculate betting market features."""
@@ -333,8 +333,18 @@ class FeatureEngineer:
         features['Draw_Value'] = features['Draw_ImpliedProb'] < 1/match['B365D']
         features['Away_Value'] = features['Away_ImpliedProb'] < 1/match['B365A']
         
-        # Favorite status
-        features['Home_Is_Favorite'] = features['Home_ImpliedProb'] == features['Market_Confidence']
+        # Favorite status and odds
+        odds = [
+            ('H', match['B365H']),
+            ('D', match['B365D']),
+            ('A', match['B365A'])
+        ]
+        min_odds = min(odds, key=lambda x: x[1])
+        max_odds = max(odds, key=lambda x: x[1])
+        
+        features['Home_Is_Favorite'] = min_odds[0] == 'H'
+        features['Favorite_Odds'] = min_odds[1]
+        features['Underdog_Odds'] = max_odds[1]
         
         return features
 
@@ -357,6 +367,11 @@ class FeatureEngineer:
             stats['Home_Corners_For_Avg'] = home_past['HC'].mean()
             stats['Home_Corners_Against_Avg'] = home_past['AC'].mean()
             
+            # Corner difference and standard deviation
+            home_corner_diffs = home_past['HC'] - home_past['AC']
+            stats['Home_Corner_Diff_Avg'] = home_corner_diffs.mean()
+            stats['Home_Corner_Std'] = home_past['HC'].std()
+            
             # Recent performance
             for window in [3, 5]:
                 stats[f'Home_Corners_For_Last{window}'] = home_past['HC'].tail(window).mean()
@@ -364,6 +379,8 @@ class FeatureEngineer:
         else:
             stats['Home_Corners_For_Avg'] = 0
             stats['Home_Corners_Against_Avg'] = 0
+            stats['Home_Corner_Diff_Avg'] = 0
+            stats['Home_Corner_Std'] = 0
             for window in [3, 5]:
                 stats[f'Home_Corners_For_Last{window}'] = 0
                 stats[f'Home_Corners_Against_Last{window}'] = 0
@@ -372,12 +389,19 @@ class FeatureEngineer:
             stats['Away_Corners_For_Avg'] = away_past['AC'].mean()
             stats['Away_Corners_Against_Avg'] = away_past['HC'].mean()
             
+            # Corner difference and standard deviation
+            away_corner_diffs = away_past['AC'] - away_past['HC']
+            stats['Away_Corner_Diff_Avg'] = away_corner_diffs.mean()
+            stats['Away_Corner_Std'] = away_past['AC'].std()
+            
             for window in [3, 5]:
                 stats[f'Away_Corners_For_Last{window}'] = away_past['AC'].tail(window).mean()
                 stats[f'Away_Corners_Against_Last{window}'] = away_past['HC'].tail(window).mean()
         else:
             stats['Away_Corners_For_Avg'] = 0
             stats['Away_Corners_Against_Avg'] = 0
+            stats['Away_Corner_Diff_Avg'] = 0
+            stats['Away_Corner_Std'] = 0
             for window in [3, 5]:
                 stats[f'Away_Corners_For_Last{window}'] = 0
                 stats[f'Away_Corners_Against_Last{window}'] = 0
