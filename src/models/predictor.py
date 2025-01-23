@@ -1,16 +1,17 @@
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    mean_squared_error, mean_absolute_error, r2_score
-)
+import os
 import joblib
-from lightgbm import LGBMRegressor
+import json
 import logging
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error, r2_score, log_loss, precision_score, recall_score, f1_score
+from lightgbm import LGBMRegressor
+from sklearn.ensemble import RandomForestRegressor
+from .base_predictor import BasePredictor
+from sklearn.ensemble import RandomForestClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
-from .base_predictor import BasePredictor
 
 logger = logging.getLogger(__name__)
 
@@ -174,8 +175,8 @@ class UnifiedPredictor(BasePredictor):
             try:
                 logger.info(f"\nTraining {market} model...")
                 market_metrics = []
-                seasonal_progression[market] = []
-                league_performance[market] = []
+                market_progressions = []
+                market_league_perfs = []
                 
                 for train_seasons, test_season in validation_windows:
                     logger.info(f"\nValidation window - Train: {train_seasons}, Test: {test_season}")
@@ -201,35 +202,36 @@ class UnifiedPredictor(BasePredictor):
                     window_progression = self._analyze_seasonal_progression(
                         test_df, y_test, y_pred, market
                     )
-                    seasonal_progression[market].append(window_progression)
+                    market_progressions.append(window_progression)
                     
                     window_league_perf = self._analyze_league_performance(
                         test_df, y_test, y_pred, market
                     )
-                    league_performance[market].append(window_league_perf)
+                    market_league_perfs.append(window_league_perf)
                 
                 metrics[market] = self._average_metrics(market_metrics)
                 
                 # Convert list of progressions to averaged dictionary
-                if seasonal_progression[market]:
-                    progression_dict = {}
-                    for match_num in range(len(seasonal_progression[market][0])):
-                        values = [prog[match_num] for prog in seasonal_progression[market] if match_num < len(prog)]
+                progression_dict = {}
+                if market_progressions:
+                    max_matches = max(len(prog) for prog in market_progressions)
+                    for match_num in range(max_matches):
+                        values = [prog[match_num] for prog in market_progressions if match_num < len(prog)]
                         if values:
                             progression_dict[match_num + 1] = sum(values) / len(values)
-                    seasonal_progression[market] = progression_dict
+                seasonal_progression[market] = progression_dict
                 
                 # Convert list of league performances to averaged dictionary
-                if league_performance[market]:
-                    league_dict = {}
+                league_dict = {}
+                if market_league_perfs:
                     all_leagues = set()
-                    for perf in league_performance[market]:
+                    for perf in market_league_perfs:
                         all_leagues.update(perf.keys())
                     
                     for league in all_leagues:
-                        values = [perf.get(league, 0) for perf in league_performance[market]]
+                        values = [perf.get(league, 0) for perf in market_league_perfs]
                         league_dict[league] = sum(values) / len(values)
-                    league_performance[market] = league_dict
+                league_performance[market] = league_dict
                 
                 all_feature_importances[market] = self.feature_importances[market].head(10)
                 
@@ -248,49 +250,23 @@ class UnifiedPredictor(BasePredictor):
             logger.info(f"\n{market.upper()} METRICS:")
             for metric, value in metrics[market].items():
                 logger.info(f"- {metric}: {value:.4f}")
+            
+            if market in seasonal_progression and seasonal_progression[market]:
+                logger.info("\nSeasonal Progression:")
+                for match_num, acc in seasonal_progression[market].items():
+                    logger.info(f"Match {match_num}: {acc:.4f}")
+            
+            if market in league_performance and league_performance[market]:
+                logger.info("\nLeague Performance:")
+                for league, perf in league_performance[market].items():
+                    logger.info(f"{league}: {perf:.4f}")
         
-        logger.info("\n" + "="*50)
-        logger.info("TOP FEATURE IMPORTANCES")
-        logger.info("="*50)
-        
-        for market in all_feature_importances:
-            logger.info(f"\n{market.upper()} TOP 10 FEATURES:")
-            for _, row in all_feature_importances[market].iterrows():
-                logger.info(f"- {row['feature']}: {row['importance']:.4f}")
-        
-        logger.info("\n" + "="*50)
-        logger.info("SEASONAL PROGRESSION ANALYSIS")
-        logger.info("="*50)
-        
-        for market in seasonal_progression:
-            logger.info(f"\n{market.upper()} ACCURACY BY MATCH NUMBER:")
-            for match_num, accuracy in seasonal_progression[market].items():
-                metric_name = "RMSE" if market in ['corners', 'cards'] else "Accuracy"
-                logger.info(f"Match {match_num}: {metric_name} = {accuracy:.4f}")
-        
-        logger.info("\n" + "="*50)
-        logger.info("LEAGUE PERFORMANCE ANALYSIS")
-        logger.info("="*50)
-        
-        for market in league_performance:
-            logger.info(f"\n{market.upper()} PERFORMANCE BY LEAGUE:")
-            metric_name = "RMSE" if market in ['corners', 'cards'] else "Accuracy"
-            for league, accuracy in sorted(league_performance[market].items(), 
-                                        key=lambda x: x[1], 
-                                        reverse=market not in ['corners', 'cards']):
-                logger.info(f"{league}: {metric_name} = {accuracy:.4f}")
-        
-        logger.info("\nCreating seasonal progression visualization...")
-        self._plot_seasonal_progression(seasonal_progression, save_path)
-        if save_path:
-            logger.info(f"Saved seasonal progression plot to {save_path}/seasonal_progression.png")
-        
-        logger.info("\nCreating league performance visualization...")
-        self._plot_league_performance(league_performance, save_path)
-        if save_path:
-            logger.info(f"Saved league performance plot to {save_path}/league_performance.png")
-        
-        return metrics
+        return {
+            'metrics': metrics,
+            'seasonal_progression': seasonal_progression,
+            'league_performance': league_performance,
+            'feature_importances': all_feature_importances
+        }
     
     def predict(self, df):
         predictions = {}
@@ -335,3 +311,53 @@ class UnifiedPredictor(BasePredictor):
                     self.regression_models[market] = joblib.load(model_path)
                 else:
                     self.models[market] = joblib.load(model_path)
+    
+    def plot_feature_importance(self, save_path=None):
+        """Plot feature importance for each market."""
+        if not self.feature_importances:
+            logger.warning("No feature importance data available.")
+            return
+        
+        plt.style.use('bmh')
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12), facecolor='#f0f0f0')
+        fig.suptitle('Feature Importance by Market', fontsize=16, y=1.02)
+        
+        axes = axes.flatten()
+        colors = plt.cm.Set3(np.linspace(0, 1, 10))
+        
+        for idx, (market, importance_df) in enumerate(self.feature_importances.items()):
+            if importance_df is None:
+                continue
+                
+            ax = axes[idx]
+            importance_df = importance_df.sort_values('importance', ascending=True)
+            
+            bars = ax.barh(range(len(importance_df)), 
+                          importance_df['importance'],
+                          color=colors[idx % len(colors)])
+            
+            ax.set_yticks(range(len(importance_df)))
+            ax.set_yticklabels(importance_df['feature'], fontsize=8)
+            
+            ax.set_title(f'{market.upper()} Feature Importance', fontsize=12, pad=10)
+            ax.set_xlabel('Importance', fontsize=10)
+            
+            # Add value labels
+            for i, v in enumerate(importance_df['importance']):
+                ax.text(v, i, f'{v:.3f}', va='center', fontsize=8)
+            
+            ax.grid(True, linestyle='--', alpha=0.3)
+            ax.set_axisbelow(True)
+            ax.set_facecolor('white')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            plt.savefig(os.path.join(save_path, 'feature_importance.png'),
+                       dpi=300, bbox_inches='tight',
+                       facecolor='white')
+        else:
+            plt.show()
+        
+        plt.close()

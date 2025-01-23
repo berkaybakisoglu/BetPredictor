@@ -57,19 +57,19 @@ class ModelConfig:
 class BettingConfig:
     initial_bankroll: float = 1000.0
     bet_size: float = 100.0
-    min_odds: float = 1.5
-    max_odds: float = 10.0
+    min_odds: float = 1.3
+    max_odds: float = 15.0
     
-    kelly_fraction: float = 0.5
+    kelly_fraction: float = 0.25
     use_kelly_criterion: bool = True
-    min_edge: float = 0.05
-    confidence_threshold: float = 0.6
+    min_edge: float = 0.03
+    confidence_threshold: float = 0.55
     
     max_stake_percent: float = 0.1
     stop_loss: float = -0.5
     take_profit: float = 2.0
     
-    markets: list = field(default_factory=lambda: ['match_odds', 'over_under'])
+    markets: list = field(default_factory=lambda: ['match_odds', 'over_under', 'match_result'])
     
     rolling_window: int = 20
     min_bets_for_analysis: int = 10

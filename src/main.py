@@ -56,23 +56,19 @@ def compare_predictors(train_data, test_data, config, logger):
     """Compare hierarchical and unified predictors."""
     logger.info("\nStarting model comparison...")
     
-
     unified_predictor = UnifiedPredictor(config.model)
     hierarchical_predictor = HierarchicalPredictor(config.model)
     
- 
     logger.info("Training Unified Predictor...")
-    unified_predictor.train(train_data)
+    unified_results = unified_predictor.train(train_data)
     
     logger.info("Training Hierarchical Predictor...")
-    hierarchical_predictor.train(train_data)
+    hierarchical_results = hierarchical_predictor.train(train_data)
     
- 
     logger.info("Making predictions with both models...")
     unified_predictions = unified_predictor.predict(test_data)
     hierarchical_predictions = hierarchical_predictor.predict(test_data)
     
-
     evaluator = BettingEvaluator(config.betting)
     
     logger.info("\nEvaluating Unified Predictor:")
@@ -81,22 +77,33 @@ def compare_predictors(train_data, test_data, config, logger):
     logger.info("\nEvaluating Hierarchical Predictor:")
     hierarchical_metrics = evaluator.evaluate(hierarchical_predictions, test_data)
     
-   
+    # Save feature importance plots
     comparison_dir = os.path.join(config.output_dir, 'model_comparison')
     if not os.path.exists(comparison_dir):
         os.makedirs(comparison_dir)
     
+    hierarchical_predictor.plot_feature_importance(
+        os.path.join(comparison_dir, 'hierarchical_features')
+    )
+    
     # Create comparison visualizations
-    plot_model_comparison(unified_metrics, hierarchical_metrics, comparison_dir)
+    plot_model_comparison(
+        unified_metrics, hierarchical_metrics, 
+        unified_results['metrics'], hierarchical_results['metrics'],
+        comparison_dir
+    )
     
     return unified_metrics, hierarchical_metrics
 
-def plot_model_comparison(unified_metrics, hierarchical_metrics, output_dir):
+def plot_model_comparison(unified_metrics, hierarchical_metrics, 
+                         unified_training, hierarchical_training, output_dir):
     """Create visualization comparing model performances."""
-   
     metrics_data = []
     
+    # Betting performance metrics
     for market in unified_metrics.keys():
+        if market == 'bankroll':
+            continue
         for metric, value in unified_metrics[market].items():
             if isinstance(value, float):
                 metrics_data.append({
@@ -117,19 +124,66 @@ def plot_model_comparison(unified_metrics, hierarchical_metrics, output_dir):
     
     df = pd.DataFrame(metrics_data)
     
-    
+    # Plot betting metrics
     plt.figure(figsize=(15, 10))
     
-    for i, market in enumerate(unified_metrics.keys(), 1):
+    for i, market in enumerate(unified_metrics.keys()):
+        if market == 'bankroll':
+            continue
         plt.subplot(2, 2, i)
         market_data = df[df['Market'] == market]
         
         sns.barplot(data=market_data, x='Metric', y='Value', hue='Model')
-        plt.title('{0} Metrics Comparison'.format(market))
+        plt.title(f'{market} Metrics Comparison')
         plt.xticks(rotation=45)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'metrics_comparison.png'))
+    plt.savefig(os.path.join(output_dir, 'betting_metrics_comparison.png'))
+    plt.close()
+    
+    # Plot bankroll evolution
+    plt.figure(figsize=(12, 6))
+    plt.plot(unified_metrics['bankroll']['balance_history'], 
+             label='Unified', alpha=0.7)
+    plt.plot(hierarchical_metrics['bankroll']['balance_history'], 
+             label='Hierarchical', alpha=0.7)
+    plt.title('Bankroll Evolution')
+    plt.xlabel('Number of Bets')
+    plt.ylabel('Bankroll')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(output_dir, 'bankroll_evolution.png'))
+    plt.close()
+    
+    # Plot training metrics comparison
+    training_data = []
+    for market in unified_training.keys():
+        for metric, value in unified_training[market].items():
+            if isinstance(value, float):
+                training_data.append({
+                    'Market': market,
+                    'Metric': metric,
+                    'Value': value,
+                    'Model': 'Unified'
+                })
+        
+        for metric, value in hierarchical_training[market].items():
+            if isinstance(value, float):
+                training_data.append({
+                    'Market': market,
+                    'Metric': metric,
+                    'Value': value,
+                    'Model': 'Hierarchical'
+                })
+    
+    training_df = pd.DataFrame(training_data)
+    
+    plt.figure(figsize=(12, 6))
+    sns.barplot(data=training_df, x='Market', y='Value', hue='Model')
+    plt.title('Training Metrics Comparison')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'training_metrics_comparison.png'))
     plt.close()
 
 def main():
@@ -157,26 +211,9 @@ def main():
         logger.info("Loading data...")
         train_data, test_data = data_loader.load_data(test_mode=args.test_mode)
         
-        if args.test_mode:
-            logger.info("Running in test mode with reduced dataset...")
-            seasons = sorted(train_data['Season'].unique())
-            
-            # Calculate how many seasons to use based on test_size
-            num_seasons = max(2, int(len(seasons) * args.test_size))
-            selected_seasons = seasons[-num_seasons:]  # Take the most recent seasons
-            
-            logger.info("Using only seasons: {0}".format(selected_seasons))
-            
-            # Filter data to only include selected seasons
-            train_data = train_data[train_data['Season'].isin(selected_seasons)]
-            test_data = test_data[test_data['Season'].isin(selected_seasons)]
-            
-            logger.info("Dataset size - Train: {0}, Test: {1}".format(
-                len(train_data), len(test_data)))
-        
         logger.info("Engineering features...")
         train_data = feature_engineer.create_features(train_data, is_training=True)
-        test_data = feature_engineer.create_features(test_data, is_training=False)
+        test_data = feature_engineer.create_features(test_data, historical_data=train_data, is_training=False)
         
         if args.compare_models:
             logger.info("Comparing predictors...")
@@ -184,15 +221,24 @@ def main():
                 train_data, test_data, config, logger
             )
             return
-            
         
         predictor = HierarchicalPredictor(config.model) if args.use_hierarchical else UnifiedPredictor(config.model)
         predictor_name = "Hierarchical" if args.use_hierarchical else "Unified"
         
         if args.train:
             logger.info("Training {0} predictor...".format(predictor_name))
-            metrics = predictor.train(train_data)
-            logger.info("Training metrics: %s", metrics)
+            training_results = predictor.train(train_data)
+            
+            logger.info("\nTraining metrics:")
+            for market, metrics in training_results['metrics'].items():
+                logger.info(f"\n{market.upper()}:")
+                for metric, value in metrics.items():
+                    logger.info(f"- {metric}: {value:.4f}")
+            
+            # Plot feature importance
+            predictor.plot_feature_importance(
+                os.path.join(config.output_dir, 'feature_importance')
+            )
             
             # Save model
             predictor.save(config.models_dir)
@@ -210,21 +256,38 @@ def main():
             
             logger.info("\nEvaluation metrics:")
             for market, market_metrics in metrics.items():
-                logger.info("\n{0}:".format(market.upper()))
+                if market == 'bankroll':
+                    logger.info("\nBankroll Metrics:")
+                    logger.info(f"Final Balance: {market_metrics['final_balance']:.2f}")
+                    logger.info(f"Max Drawdown: {market_metrics['max_drawdown']:.2%}")
+                    logger.info(f"Sharpe Ratio: {market_metrics['sharpe_ratio']:.2f}")
+                    logger.info(f"Profit Factor: {market_metrics['profit_factor']:.2f}")
+                    continue
+                    
+                logger.info(f"\n{market.upper()}:")
                 for metric, value in market_metrics.items():
                     if isinstance(value, dict):
-                        logger.info("\n- {0}:".format(metric))
+                        logger.info(f"\n- {metric}:")
                         for sub_metric, sub_value in value.items():
                             if isinstance(sub_value, float):
-                                logger.info("  - {0}: {1:.4f}".format(sub_metric, sub_value))
+                                logger.info(f"  - {sub_metric}: {sub_value:.4f}")
                             else:
-                                logger.info("  - {0}: {1}".format(sub_metric, sub_value))
+                                logger.info(f"  - {sub_metric}: {sub_value}")
                     elif isinstance(value, float):
-                        logger.info("- {0}: {1:.4f}".format(metric, value))
+                        logger.info(f"- {metric}: {value:.4f}")
                     else:
-                        logger.info("- {0}: {1}".format(metric, value))
+                        logger.info(f"- {metric}: {value}")
             
-           
+            # Create visualizations directory
+            viz_dir = os.path.join(config.output_dir, 'visualizations')
+            os.makedirs(viz_dir, exist_ok=True)
+            
+            # Plot feature importance if available
+            if hasattr(predictor, 'plot_feature_importance'):
+                predictor.plot_feature_importance(viz_dir)
+            
+            logger.info(f"\nVisualizations saved to {viz_dir}")
+            
             if hasattr(evaluator, 'bet_details') and evaluator.bet_details:
                 bet_history = pd.DataFrame(evaluator.bet_details)
                 visualizer = evaluator.visualizer

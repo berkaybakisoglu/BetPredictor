@@ -43,7 +43,10 @@ class BasePredictor:
             'Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb',
             'Market_Confidence', 'Market_Overround',
             'Home_Value', 'Draw_Value', 'Away_Value',
-            'Home_Is_Favorite', 'Favorite_Odds', 'Underdog_Odds'
+            'Home_Is_Favorite', 'Favorite_Odds', 'Underdog_Odds',
+            
+            # Original Betting Odds
+            'B365H_Original', 'B365D_Original', 'B365A_Original'
         ]
     
     def _define_corner_features(self):
@@ -119,9 +122,9 @@ class BasePredictor:
             'Home_Prob': probas[:, 0],
             'Draw_Prob': probas[:, 1],
             'Away_Prob': probas[:, 2],
-            'B365H': df['B365H'],
-            'B365D': df['B365D'],
-            'B365A': df['B365A']
+            'B365H': df['B365H_Original'],
+            'B365D': df['B365D_Original'],
+            'B365A': df['B365A_Original']
         })
         
         predictions['Predicted'] = predictions[['Home_Prob', 'Draw_Prob', 'Away_Prob']].idxmax(axis=1).map({
@@ -134,9 +137,9 @@ class BasePredictor:
             predictions[['Home_Prob', 'Draw_Prob', 'Away_Prob']].values
         )
         
-        predictions['Home_Value'] = predictions['Home_Prob'] * df['B365H']
-        predictions['Draw_Value'] = predictions['Draw_Prob'] * df['B365D']
-        predictions['Away_Value'] = predictions['Away_Prob'] * df['B365A']
+        predictions['Home_Value'] = predictions['Home_Prob'] * df['B365H_Original']
+        predictions['Draw_Value'] = predictions['Draw_Prob'] * df['B365D_Original']
+        predictions['Away_Value'] = predictions['Away_Prob'] * df['B365A_Original']
         
         return predictions
     
@@ -149,6 +152,7 @@ class BasePredictor:
         })
     
     def _analyze_seasonal_progression(self, df, y_true, y_pred, market):
+        """Analyze prediction performance throughout the season."""
         analysis_df = pd.DataFrame({
             'Date': df['Date'],
             'Season': df['Season'],
@@ -160,7 +164,7 @@ class BasePredictor:
         analysis_df = analysis_df.sort_values('Date')
         analysis_df['Match_Number'] = analysis_df.groupby(['Season', 'HomeTeam']).cumcount() + 1
         
-        match_accuracies = {}
+        match_accuracies = []
         max_matches = analysis_df['Match_Number'].max()
         
         for match_num in range(1, max_matches + 1):
@@ -176,7 +180,7 @@ class BasePredictor:
                         matches_at_num['True'],
                         matches_at_num['Pred']
                     )
-                match_accuracies[match_num] = accuracy
+                match_accuracies.append(accuracy)
         
         return match_accuracies
     
@@ -378,7 +382,7 @@ class BasePredictor:
             scaler_path = os.path.join(model_dir, f'{name}_scaler.joblib')
             joblib.dump(scaler, scaler_path)
             
-            if name in self.feature_importances:
+            if name in self.feature_importances and self.feature_importances[name] is not None:
                 importance_path = os.path.join(model_dir, f'{name}_importance.csv')
                 self.feature_importances[name].to_csv(importance_path, index=False)
             
