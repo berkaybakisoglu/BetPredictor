@@ -12,14 +12,30 @@ class FeatureEngineer:
         self.test_seasons = test_seasons if test_seasons else []
         self.logger = logging.getLogger(__name__)
 
+    def _validate_no_leakage(self, match_date, used_data, context=""):
+        """Validate that we're not using any future data."""
+        if len(used_data) > 0:
+            future_data = used_data[used_data['Date'] >= match_date]
+            if len(future_data) > 0:
+                future_matches = future_data[['Date', 'HomeTeam', 'AwayTeam']].head()
+                raise ValueError(
+                    f"DATA LEAKAGE DETECTED in {context}:\n"
+                    f"Found {len(future_data)} matches from the future!\n"
+                    f"Current match date: {match_date}\n"
+                    f"Future matches used:\n{future_matches}"
+                )
+    
+    def _validate_date_order(self, df, context=""):
+        """Validate that dates are in chronological order."""
+        if not df['Date'].is_monotonic_increasing:
+            raise ValueError(
+                f"DATA LEAKAGE RISK in {context}:\n"
+                f"Dates are not in chronological order!\n"
+                f"Please sort the data by date before processing."
+            )
+
     def create_features(self, df, historical_data=None, is_training=True):
-        """
-        Create features for the dataset.
-        Args:
-            df: DataFrame to create features for
-            historical_data: Optional DataFrame containing historical data for test predictions
-            is_training: Whether this is training data or test data
-        """
+        """Create features using only historical data before each match."""
         logger = logging.getLogger(__name__)
         logger.info("Creating features...")
         
@@ -27,497 +43,525 @@ class FeatureEngineer:
             logger.warning("Empty DataFrame provided, returning as is")
             return df
         
-        df = df.copy()
-        total_rows = len(df)
-        logger.info(f"Processing {total_rows} rows of data")
+        # Validate input data
+        self._validate_date_order(df, "input data")
+        if historical_data is not None:
+            self._validate_date_order(historical_data, "historical data")
         
-        # Sort data chronologically
+        df = df.copy()
         df = df.sort_values('Date')
         
-        # For test data, use historical data for feature calculation
-        if not is_training and historical_data is not None:
+        # Store original betting odds
+        df['B365H_Original'] = df['B365H']
+        df['B365D_Original'] = df['B365D']
+        df['B365A_Original'] = df['B365A']
+        
+        # Combine with historical data if provided
+        if historical_data is not None:
             data_for_features = pd.concat([historical_data, df]).sort_values('Date')
-            logger.info(f"Combined historical and test data shape: {data_for_features.shape}")
-            logger.info(f"Test data seasons: {sorted(df['Season'].unique())}")
-            logger.info(f"Historical data seasons: {sorted(historical_data['Season'].unique())}")
+            logger.info(f"Combined historical and current data shape: {data_for_features.shape}")
         else:
             data_for_features = df.copy()
         
-        logger.info(f"Data for features shape: {data_for_features.shape}")
-        logger.info(f"Seasons in data: {sorted(data_for_features['Season'].unique())}")
+        logger.info(f"Processing {len(df)} matches...")
         
-        # Process each season separately
-        seasons = df['Season'].unique()  # Always use the seasons from the input DataFrame
-        logger.info(f"Processing {len(seasons)} seasons: {sorted(seasons)}")
-        
-        for season in tqdm(seasons, desc="Processing seasons", unit="season"):
-            logger.info(f"\nProcessing season {season}")
+        # Process each match chronologically
+        for idx, match in tqdm(df.iterrows(), desc="Processing matches", total=len(df)):
+            # Get all matches before current match
+            past_matches = data_for_features[data_for_features['Date'] < match['Date']]
             
-            # Get all data up to and including the current season for feature calculation
-            if not is_training:
-                season_data = data_for_features[data_for_features['Season'] <= season]
+            # Validate no data leakage in past_matches
+            self._validate_no_leakage(match['Date'], past_matches, "initial past matches filter")
+            
+            if len(past_matches) > 0:
+                # 1. League Standings
+                standings = self._calculate_league_standings(match, past_matches)
+                for key, value in standings.items():
+                    df.loc[idx, key] = value
+                
+                # 2. Team Performance Stats
+                team_stats = self._calculate_team_stats(match, past_matches)
+                for key, value in team_stats.items():
+                    df.loc[idx, key] = value
+                
+                # 3. Head-to-Head Stats
+                h2h_stats = self._calculate_h2h_stats(match, past_matches)
+                for key, value in h2h_stats.items():
+                    df.loc[idx, f'h2h_{key}'] = value
+                
+                # 4. Market Features (if enabled)
+                if self.config.use_market_features:
+                    market_features = self._calculate_market_features(match)
+                    for key, value in market_features.items():
+                        df.loc[idx, key] = value
+                
+                # 5. Corner Features (if enabled)
+                if self.config.use_corner_features:
+                    corner_stats = self._calculate_corner_stats(match, past_matches)
+                    for key, value in corner_stats.items():
+                        df.loc[idx, key] = value
+                
+                # 6. Card Features (if enabled)
+                if self.config.use_card_features:
+                    card_stats = self._calculate_card_stats(match, past_matches)
+                    for key, value in card_stats.items():
+                        df.loc[idx, key] = value
+                
+                # 7. Additional Performance Stats
+                additional_stats = self._calculate_additional_stats(match, past_matches)
+                for key, value in additional_stats.items():
+                    df.loc[idx, key] = value
             else:
-                season_data = data_for_features[data_for_features['Season'] == season]
-            
-            # Process each league separately within the season
-            leagues = df[df['Season'] == season]['League'].unique()
-            logger.info(f"Found {len(leagues)} leagues in season {season}: {sorted(leagues)}")
-            
-            for league in tqdm(leagues, desc=f"Processing leagues for {season}", unit="league", leave=False):
-                league_mask = season_data['League'] == league
-                league_data = season_data[league_mask].copy()
-                
-                logger.info(f"Processing league {league} for season {season}")
-                
-                # For test data, calculate stats using only past matches
-                if not is_training:
-                    league_data = league_data.sort_values('Date')
-                    test_matches = df[(df['Season'] == season) & (df['League'] == league)]
-                    logger.info(f"Processing {len(test_matches)} test matches for {league} in {season}")
-                    
-                    for idx, match in test_matches.iterrows():
-                        past_matches = league_data[league_data['Date'] < match['Date']]
-                        if len(past_matches) > 0:
-                            stats = self._calculate_team_stats(past_matches, season)
-                            home_team = match['HomeTeam']
-                            away_team = match['AwayTeam']
-                            
-                            if home_team in stats:
-                                for stat, value in stats[home_team].items():
-                                    df.loc[idx, stat] = value
-                            if away_team in stats:
-                                for stat, value in stats[away_team].items():
-                                    df.loc[idx, stat] = value
-                        else:
-                            logger.warning(f"No past matches found for {league} {season} match on {match['Date']}")
-                else:
-                    stats = self._calculate_team_stats(league_data, season)
-                    for team in stats:
-                        home_mask = (df['Season'] == season) & (df['League'] == league) & (df['HomeTeam'] == team)
-                        away_mask = (df['Season'] == season) & (df['League'] == league) & (df['AwayTeam'] == team)
-                        
-                        if team in stats:
-                            for stat, value in stats[team].items():
-                                df.loc[home_mask, stat] = value
-                                df.loc[away_mask, stat] = value
-                
-                logger.info(f"Completed processing league {league} for season {season}")
-            logger.info(f"Completed processing season {season}")
+                # For first matches, set default values
+                self._set_default_values(df, idx)
         
-        # Add head-to-head features
-        logger.info("\nCalculating head-to-head statistics...")
-        if not is_training:
-            for idx, match in tqdm(df.iterrows(), desc="Adding H2H features", total=len(df)):
-                past_matches = data_for_features[data_for_features['Date'] < match['Date']]
-                if len(past_matches) > 0:
-                    h2h_stats = self._calculate_h2h_stats(past_matches)
-                    home_team = match['HomeTeam']
-                    away_team = match['AwayTeam']
-                    h2h_key = f"{home_team}_{away_team}"
-                    
-                    if h2h_key in h2h_stats:
-                        stats = h2h_stats[h2h_key]
-                        for stat, value in stats.items():
-                            df.loc[idx, f'h2h_{stat}'] = value
-                    else:
-                        # Use historical data averages for default values
-                        df.loc[idx, ['h2h_home_win_rate', 'h2h_draw_rate', 'h2h_away_win_rate']] = 1/3
-                        df.loc[idx, ['h2h_home_goals', 'h2h_away_goals', 'h2h_total_goals']] = data_for_features[['FTHG', 'FTAG']].mean().mean()
-        else:
-            h2h_stats = self._calculate_h2h_stats(df)
-            for idx, row in tqdm(df.iterrows(), desc="Adding H2H features", total=len(df)):
-                home_team = row['HomeTeam']
-                away_team = row['AwayTeam']
-                h2h_key = f"{home_team}_{away_team}"
-                
-                if h2h_key in h2h_stats:
-                    stats = h2h_stats[h2h_key]
-                    for stat, value in stats.items():
-                        df.loc[idx, f'h2h_{stat}'] = value
-                else:
-                    df.loc[idx, ['h2h_home_win_rate', 'h2h_draw_rate', 'h2h_away_win_rate']] = 1/3
-                    df.loc[idx, ['h2h_home_goals', 'h2h_away_goals', 'h2h_total_goals']] = df[['FTHG', 'FTAG']].mean().mean()
-        
-        if self.config.use_market_features:
-            logger.info("\nCreating market features...")
-            with tqdm(total=8, desc="Market features", unit="step") as pbar:
-                # Preserve original betting odds columns
-                df['B365H_Original'] = df['B365H']
-                df['B365D_Original'] = df['B365D']
-                df['B365A_Original'] = df['B365A']
-                
-                df['Home_ImpliedProb'] = 1 / df['B365H']
-                df['Draw_ImpliedProb'] = 1 / df['B365D']
-                df['Away_ImpliedProb'] = 1 / df['B365A']
-                pbar.update(1)
-                
-                # Only create over/under market features if the columns exist
-                if 'BbMx>2.5' in df.columns and 'BbMx<2.5' in df.columns:
-                    df['Over_ImpliedProb'] = 1 / df['BbMx>2.5']
-                    df['Under_ImpliedProb'] = 1 / df['BbMx<2.5']
-                    df['OU_Market_Overround'] = df['Over_ImpliedProb'] + df['Under_ImpliedProb']
-                    df['OU_Market_Confidence'] = df[['Over_ImpliedProb', 'Under_ImpliedProb']].max(axis=1)
-                    df['Over_Value'] = df['Over_ImpliedProb'] < 1/df['BbMx>2.5']
-                    df['Under_Value'] = df['Under_ImpliedProb'] < 1/df['BbMx<2.5']
-                    df['Over_Is_Favorite'] = df[['Over_ImpliedProb', 'Under_ImpliedProb']].idxmax(axis=1) == 'Over_ImpliedProb'
-                pbar.update(3)
-                
-                df['Market_Overround'] = df['Home_ImpliedProb'] + df['Draw_ImpliedProb'] + df['Away_ImpliedProb']
-                df['Market_Confidence'] = df[['Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb']].max(axis=1)
-                pbar.update(1)
-                
-                df['Home_Value'] = df['Home_ImpliedProb'] < 1/df['B365H']
-                df['Draw_Value'] = df['Draw_ImpliedProb'] < 1/df['B365D']
-                df['Away_Value'] = df['Away_ImpliedProb'] < 1/df['B365A']
-                pbar.update(2)
-                
-                df['Home_Is_Favorite'] = df[['Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb']].idxmax(axis=1) == 'Home_ImpliedProb'
-                
-                # Add favorite and underdog odds
-                df['Favorite_Odds'] = df.apply(lambda x: min(x['B365H'], x['B365D'], x['B365A']), axis=1)
-                df['Underdog_Odds'] = df.apply(lambda x: max(x['B365H'], x['B365D'], x['B365A']), axis=1)
-                pbar.update(1)
-            
-            logger.info("Completed market features")
-        
-        if self.config.use_position_features:
-            logger.info("\nCreating position features...")
-            for season in tqdm(df['Season'].unique(), desc="Calculating league positions", unit="season"):
-                logger.info(f"Processing season {season}")
-                season_mask = df['Season'] == season
-                season_data = df[season_mask].copy()
-                
-                # Process each league separately
-                leagues = season_data['League'].unique()
-                for league in tqdm(leagues, desc=f"Processing leagues for {season}", unit="league", leave=False):
-                    logger.info(f"Calculating standings for league {league}")
-                    league_mask = season_data['League'] == league
-                    league_data = season_data[league_mask].sort_values('Date')
-                    
-                    # Initialize standings dictionary for this league
-                    standings = {}
-                    
-                    # Process each match chronologically to update standings
-                    for idx, match in tqdm(league_data.iterrows(), desc=f"Processing matches for {league}", unit="match", leave=False):
-                        match_date = match['Date']
-                        home_team = match['HomeTeam']
-                        away_team = match['AwayTeam']
-                        
-                        # Initialize teams in standings if not present
-                        for team in [home_team, away_team]:
-                            if team not in standings:
-                                standings[team] = {
-                                    'points': 0,
-                                    'matches_played': 0,
-                                    'wins': 0,
-                                    'draws': 0,
-                                    'losses': 0,
-                                    'goals_for': 0,
-                                    'goals_against': 0
-                                }
-                        
-                        # Record current standings before the match
-                        home_mask = (season_mask) & (df['League'] == league) & (df['HomeTeam'] == home_team) & (df['Date'] == match_date)
-                        away_mask = (season_mask) & (df['League'] == league) & (df['AwayTeam'] == away_team) & (df['Date'] == match_date)
-                        
-                        # Sort teams by points (desc), goal difference, goals scored
-                        sorted_teams = sorted(
-                            standings.items(),
-                            key=lambda x: (-x[1]['points'], 
-                                         -(x[1]['goals_for'] - x[1]['goals_against']),
-                                         -x[1]['goals_for'])
-                        )
-                        
-                        # Assign positions
-                        positions = {team: pos+1 for pos, (team, _) in enumerate(sorted_teams)}
-                        
-                        # Update dataframe with current standings
-                        if home_team in positions:
-                            df.loc[home_mask, 'Home_League_Position'] = positions[home_team]
-                            df.loc[home_mask, 'Home_Points'] = standings[home_team]['points']
-                            df.loc[home_mask, 'Home_Matches_Played'] = standings[home_team]['matches_played']
-                        
-                        if away_team in positions:
-                            df.loc[away_mask, 'Away_League_Position'] = positions[away_team]
-                            df.loc[away_mask, 'Away_Points'] = standings[away_team]['points']
-                            df.loc[away_mask, 'Away_Matches_Played'] = standings[away_team]['matches_played']
-                        
-                        if not is_training:
-                            # For test data, only update standings after recording the current positions
-                            if match['FTR'] == 'H':  # Home win
-                                standings[home_team]['points'] += 3
-                                standings[home_team]['wins'] += 1
-                                standings[away_team]['losses'] += 1
-                            elif match['FTR'] == 'A':  # Away win
-                                standings[away_team]['points'] += 3
-                                standings[away_team]['wins'] += 1
-                                standings[home_team]['losses'] += 1
-                            else:  # Draw
-                                standings[home_team]['points'] += 1
-                                standings[away_team]['points'] += 1
-                                standings[home_team]['draws'] += 1
-                                standings[away_team]['draws'] += 1
-                            
-                            # Update goals
-                            standings[home_team]['goals_for'] += match['FTHG']
-                            standings[home_team]['goals_against'] += match['FTAG']
-                            standings[away_team]['goals_for'] += match['FTAG']
-                            standings[away_team]['goals_against'] += match['FTHG']
-                            
-                            # Update matches played
-                            standings[home_team]['matches_played'] += 1
-                            standings[away_team]['matches_played'] += 1
-                    
-                    # Calculate final differences for this league
-                    league_mask = (season_mask) & (df['League'] == league)
-                    df.loc[league_mask, 'Position_Diff'] = df.loc[league_mask, 'Home_League_Position'] - df.loc[league_mask, 'Away_League_Position']
-                    df.loc[league_mask, 'Points_Diff'] = df.loc[league_mask, 'Home_Points'] - df.loc[league_mask, 'Away_Points']
-                    df.loc[league_mask, 'Form_Diff'] = df.loc[league_mask, 'Home_Matches_Played'] - df.loc[league_mask, 'Away_Matches_Played']
-                    
-                    logger.info(f"Completed standings calculation for league {league}")
-                logger.info(f"Completed position features for season {season}")
-        
-        if self.config.use_corner_features:
-            logger.info("\nCreating corner features...")
-            with tqdm(total=4, desc="Corner features", unit="step") as pbar:
-                if not is_training:
-                    df = df.sort_values('Date')
-                    for idx, match in df.iterrows():
-                        past_matches = data_for_features[data_for_features['Date'] < match['Date']]
-                        if len(past_matches) > 0:
-                            home_team = match['HomeTeam']
-                            away_team = match['AwayTeam']
-                            
-                            # Basic Corner Stats
-                            home_matches = past_matches[past_matches['HomeTeam'] == home_team]
-                            away_matches = past_matches[past_matches['AwayTeam'] == away_team]
-                            
-                            df.loc[idx, 'Home_Corners_For_Avg'] = home_matches['HC'].mean() if len(home_matches) > 0 else 0
-                            df.loc[idx, 'Home_Corners_Against_Avg'] = home_matches['AC'].mean() if len(home_matches) > 0 else 0
-                            df.loc[idx, 'Away_Corners_For_Avg'] = away_matches['AC'].mean() if len(away_matches) > 0 else 0
-                            df.loc[idx, 'Away_Corners_Against_Avg'] = away_matches['HC'].mean() if len(away_matches) > 0 else 0
-                            
-                            # Recent Performance
-                            for window in [3, 5]:
-                                df.loc[idx, f'Home_Corners_For_Last{window}'] = home_matches['HC'].tail(window).mean() if len(home_matches) > 0 else 0
-                                df.loc[idx, f'Home_Corners_Against_Last{window}'] = home_matches['AC'].tail(window).mean() if len(home_matches) > 0 else 0
-                                df.loc[idx, f'Away_Corners_For_Last{window}'] = away_matches['AC'].tail(window).mean() if len(away_matches) > 0 else 0
-                                df.loc[idx, f'Away_Corners_Against_Last{window}'] = away_matches['HC'].tail(window).mean() if len(away_matches) > 0 else 0
-                            
-                            # Derived Metrics
-                            df.loc[idx, 'Home_Corner_Diff_Avg'] = df.loc[idx, 'Home_Corners_For_Avg'] - df.loc[idx, 'Home_Corners_Against_Avg']
-                            df.loc[idx, 'Away_Corner_Diff_Avg'] = df.loc[idx, 'Away_Corners_For_Avg'] - df.loc[idx, 'Away_Corners_Against_Avg']
-                            df.loc[idx, 'Home_Corner_Std'] = home_matches['HC'].std() if len(home_matches) > 1 else 0
-                            df.loc[idx, 'Away_Corner_Std'] = away_matches['AC'].std() if len(away_matches) > 1 else 0
-                else:
-                    # Basic Corner Stats
-                    df['Home_Corners_For_Avg'] = df.groupby('HomeTeam')['HC'].transform('mean')
-                    df['Home_Corners_Against_Avg'] = df.groupby('HomeTeam')['AC'].transform('mean')
-                    df['Away_Corners_For_Avg'] = df.groupby('AwayTeam')['AC'].transform('mean')
-                    df['Away_Corners_Against_Avg'] = df.groupby('AwayTeam')['HC'].transform('mean')
-                    pbar.update(1)
-                    
-                    # Recent Performance
-                    for window in [3, 5]:
-                        df[f'Home_Corners_For_Last{window}'] = df.groupby('HomeTeam')['HC'].transform(lambda x: x.rolling(window, min_periods=1).mean())
-                        df[f'Home_Corners_Against_Last{window}'] = df.groupby('HomeTeam')['AC'].transform(lambda x: x.rolling(window, min_periods=1).mean())
-                        df[f'Away_Corners_For_Last{window}'] = df.groupby('AwayTeam')['AC'].transform(lambda x: x.rolling(window, min_periods=1).mean())
-                        df[f'Away_Corners_Against_Last{window}'] = df.groupby('AwayTeam')['HC'].transform(lambda x: x.rolling(window, min_periods=1).mean())
-                    pbar.update(2)
-                    
-                    # Derived Metrics
-                    df['Home_Corner_Diff_Avg'] = df['Home_Corners_For_Avg'] - df['Home_Corners_Against_Avg']
-                    df['Away_Corner_Diff_Avg'] = df['Away_Corners_For_Avg'] - df['Away_Corners_Against_Avg']
-                    df['Home_Corner_Std'] = df.groupby('HomeTeam')['HC'].transform('std')
-                    df['Away_Corner_Std'] = df.groupby('AwayTeam')['AC'].transform('std')
-                    pbar.update(1)
-        
-        if self.config.use_card_features:
-            logger.info("\nCreating card features...")
-            with tqdm(total=2, desc="Card features", unit="step") as pbar:
-                if not is_training:
-                    df = df.sort_values('Date')
-                    for idx, match in df.iterrows():
-                        past_matches = data_for_features[data_for_features['Date'] < match['Date']]
-                        if len(past_matches) > 0:
-                            home_team = match['HomeTeam']
-                            away_team = match['AwayTeam']
-                            
-                            # Basic Card Stats
-                            home_matches = past_matches[past_matches['HomeTeam'] == home_team]
-                            away_matches = past_matches[past_matches['AwayTeam'] == away_team]
-                            
-                            df.loc[idx, 'Home_Cards_Avg'] = home_matches['HY'].mean() if len(home_matches) > 0 else 0
-                            df.loc[idx, 'Away_Cards_Avg'] = away_matches['AY'].mean() if len(away_matches) > 0 else 0
-                            
-                            # Recent Performance
-                            for window in [3, 5]:
-                                df.loc[idx, f'Home_Cards_Last{window}'] = home_matches['HY'].tail(window).mean() if len(home_matches) > 0 else 0
-                                df.loc[idx, f'Away_Cards_Last{window}'] = away_matches['AY'].tail(window).mean() if len(away_matches) > 0 else 0
-                else:
-                    # Basic Card Stats
-                    df['Home_Cards_Avg'] = df.groupby('HomeTeam')['HY'].transform('mean')
-                    df['Away_Cards_Avg'] = df.groupby('AwayTeam')['AY'].transform('mean')
-                    pbar.update(1)
-                    
-                    # Recent Performance
-                    for window in [3, 5]:
-                        df[f'Home_Cards_Last{window}'] = df.groupby('HomeTeam')['HY'].transform(lambda x: x.rolling(window, min_periods=1).mean())
-                        df[f'Away_Cards_Last{window}'] = df.groupby('AwayTeam')['AY'].transform(lambda x: x.rolling(window, min_periods=1).mean())
-                    pbar.update(1)
-        
-        logger.info(f"\nFeature creation completed. Final shape: {df.shape}")
+        logger.info(f"Feature creation completed. Final shape: {df.shape}")
         return df
-    
-    def _calculate_h2h_stats(self, df):
-        """Calculate head-to-head statistics for each team pair."""
-        h2h_stats = {}
+
+    def _calculate_league_standings(self, match, past_matches):
+        """Calculate league standings up to the current match."""
+        season = match['Season']
+        league = match['League']
+        match_date = match['Date']
         
-        for _, row in df.iterrows():
-            home_team = row['HomeTeam']
-            away_team = row['AwayTeam']
-            h2h_key = f"{home_team}_{away_team}"
+        # Get only matches from same season/league
+        season_matches = past_matches[
+            (past_matches['Season'] == season) & 
+            (past_matches['League'] == league)
+        ].sort_values('Date')
+        
+        # Validate no future matches in season data
+        self._validate_no_leakage(match_date, season_matches, "league standings calculation")
+        
+        standings = {}
+        
+        # Process each match to build standings
+        for _, past_match in season_matches.iterrows():
+            home_team = past_match['HomeTeam']
+            away_team = past_match['AwayTeam']
             
-            if h2h_key not in h2h_stats:
-                # Get all matches between these teams
-                h2h_matches = df[
-                    ((df['HomeTeam'] == home_team) & (df['AwayTeam'] == away_team)) |
-                    ((df['HomeTeam'] == away_team) & (df['AwayTeam'] == home_team))
-                ]
-                
-                if len(h2h_matches) > 0:
-                    home_wins = len(h2h_matches[h2h_matches['FTR'] == 'H'])
-                    draws = len(h2h_matches[h2h_matches['FTR'] == 'D'])
-                    away_wins = len(h2h_matches[h2h_matches['FTR'] == 'A'])
-                    total_matches = len(h2h_matches)
-                    
-                    h2h_stats[h2h_key] = {
-                        'home_win_rate': home_wins / total_matches,
-                        'draw_rate': draws / total_matches,
-                        'away_win_rate': away_wins / total_matches,
-                        'home_goals': h2h_matches['FTHG'].mean(),
-                        'away_goals': h2h_matches['FTAG'].mean(),
-                        'total_goals': (h2h_matches['FTHG'] + h2h_matches['FTAG']).mean()
+            # Initialize teams if not in standings
+            for team in [home_team, away_team]:
+                if team not in standings:
+                    standings[team] = {
+                        'points': 0,
+                        'matches_played': 0,
+                        'wins': 0,
+                        'draws': 0,
+                        'losses': 0,
+                        'goals_for': 0,
+                        'goals_against': 0
                     }
+            
+            # Update standings based on result
+            if past_match['FTR'] == 'H':
+                standings[home_team]['points'] += 3
+                standings[home_team]['wins'] += 1
+                standings[away_team]['losses'] += 1
+            elif past_match['FTR'] == 'A':
+                standings[away_team]['points'] += 3
+                standings[away_team]['wins'] += 1
+                standings[home_team]['losses'] += 1
+            else:  # Draw
+                standings[home_team]['points'] += 1
+                standings[away_team]['points'] += 1
+                standings[home_team]['draws'] += 1
+                standings[away_team]['draws'] += 1
+            
+            # Update goals
+            standings[home_team]['goals_for'] += past_match['FTHG']
+            standings[home_team]['goals_against'] += past_match['FTAG']
+            standings[away_team]['goals_for'] += past_match['FTAG']
+            standings[away_team]['goals_against'] += past_match['FTHG']
+            
+            standings[home_team]['matches_played'] += 1
+            standings[away_team]['matches_played'] += 1
         
-        return h2h_stats
-    
-    def _calculate_team_stats(self, df, season):
-        """Calculate team statistics for both training and test data."""
+        # Sort teams by points, goal difference, goals scored
+        sorted_teams = sorted(
+            standings.items(),
+            key=lambda x: (
+                -x[1]['points'],
+                -(x[1]['goals_for'] - x[1]['goals_against']),
+                -x[1]['goals_for']
+            )
+        )
+        
+        positions = {team: pos+1 for pos, (team, _) in enumerate(sorted_teams)}
+        
+        home_team = match['HomeTeam']
+        away_team = match['AwayTeam']
+        
+        return {
+            'Home_League_Position': positions.get(home_team, len(positions) + 1),
+            'Away_League_Position': positions.get(away_team, len(positions) + 1),
+            'Home_Points': standings.get(home_team, {'points': 0})['points'],
+            'Away_Points': standings.get(away_team, {'points': 0})['points'],
+            'Position_Diff': positions.get(home_team, len(positions) + 1) - positions.get(away_team, len(positions) + 1),
+            'Points_Diff': standings.get(home_team, {'points': 0})['points'] - standings.get(away_team, {'points': 0})['points']
+        }
+
+    def _calculate_team_stats(self, match, past_matches):
+        """Calculate team statistics using only past matches."""
+        home_team = match['HomeTeam']
+        away_team = match['AwayTeam']
+        match_date = match['Date']
+        
+        # Get team's previous matches
+        home_past = past_matches[
+            (past_matches['HomeTeam'] == home_team) | 
+            (past_matches['AwayTeam'] == home_team)
+        ].sort_values('Date')
+        
+        # Validate no future matches in home team data
+        self._validate_no_leakage(match_date, home_past, "home team stats calculation")
+        
+        away_past = past_matches[
+            (past_matches['HomeTeam'] == away_team) | 
+            (past_matches['AwayTeam'] == away_team)
+        ].sort_values('Date')
+        
+        # Validate no future matches in away team data
+        self._validate_no_leakage(match_date, away_past, "away team stats calculation")
+        
         stats = {}
-        df = df.sort_values('Date')
         
-        for team in df['HomeTeam'].unique():
-            home_matches = df[df['HomeTeam'] == team]
-            away_matches = df[df['AwayTeam'] == team]
-            
-            if len(home_matches) == 0 and len(away_matches) == 0:
-                continue
-            
-            # Initialize team stats with correct column names
-            stats[team] = {
-                'Home_Goals_Scored_Avg': 0,
-                'Home_Goals_Conceded_Avg': 0,
-                'Away_Goals_Scored_Avg': 0,
-                'Away_Goals_Conceded_Avg': 0,
-                'Home_Clean_Sheets': 0,
-                'Away_Clean_Sheets': 0,
-                'Home_Failed_Score': 0,
-                'Away_Failed_Score': 0,
-                'Goals_Diff_Home': 0,
-                'Goals_Diff_Away': 0,
-                'Home_Form': 0,
-                'Away_Form': 0,
-                'General_Form': 0,
-                'Home_Win_Rate': 0,
-                'Away_Win_Rate': 0
-            }
-            
-            # Calculate home stats
-            if len(home_matches) > 0:
-                stats[team]['Home_Goals_Scored_Avg'] = home_matches['FTHG'].mean()
-                stats[team]['Home_Goals_Conceded_Avg'] = home_matches['FTAG'].mean()
-                stats[team]['Home_Clean_Sheets'] = (home_matches['FTAG'] == 0).mean()
-                stats[team]['Home_Failed_Score'] = (home_matches['FTHG'] == 0).mean()
-                stats[team]['Goals_Diff_Home'] = (home_matches['FTHG'] - home_matches['FTAG']).mean()
-                stats[team]['Home_Win_Rate'] = (home_matches['FTR'] == 'H').mean()
-                
-                # Calculate home form (last 5 matches)
-                home_form = []
-                for _, match in home_matches.iterrows():
-                    if match['FTR'] == 'H':
-                        home_form.append(3)
-                    elif match['FTR'] == 'D':
-                        home_form.append(1)
-                    else:
-                        home_form.append(0)
-                stats[team]['Home_Form'] = sum(home_form[-5:]) / min(5, len(home_form))
-            
-            # Calculate away stats
-            if len(away_matches) > 0:
-                stats[team]['Away_Goals_Scored_Avg'] = away_matches['FTAG'].mean()
-                stats[team]['Away_Goals_Conceded_Avg'] = away_matches['FTHG'].mean()
-                stats[team]['Away_Clean_Sheets'] = (away_matches['FTHG'] == 0).mean()
-                stats[team]['Away_Failed_Score'] = (away_matches['FTAG'] == 0).mean()
-                stats[team]['Goals_Diff_Away'] = (away_matches['FTAG'] - away_matches['FTHG']).mean()
-                stats[team]['Away_Win_Rate'] = (away_matches['FTR'] == 'A').mean()
-                
-                # Calculate away form (last 5 matches)
-                away_form = []
-                for _, match in away_matches.iterrows():
-                    if match['FTR'] == 'A':
-                        away_form.append(3)
-                    elif match['FTR'] == 'D':
-                        away_form.append(1)
-                    else:
-                        away_form.append(0)
-                stats[team]['Away_Form'] = sum(away_form[-5:]) / min(5, len(away_form))
-            
-            # Calculate general form
-            all_matches = pd.concat([
-                home_matches[['Date', 'FTR']].assign(is_home=True),
-                away_matches[['Date', 'FTR']].assign(is_home=False)
-            ]).sort_values('Date')
-            
-            general_form = []
-            for _, match in all_matches.iterrows():
-                if (match['is_home'] and match['FTR'] == 'H') or (not match['is_home'] and match['FTR'] == 'A'):
-                    general_form.append(3)
-                elif match['FTR'] == 'D':
-                    general_form.append(1)
+        # Home team stats
+        if len(home_past) > 0:
+            home_goals_scored = []
+            home_goals_conceded = []
+            for _, past_match in home_past.iterrows():
+                if past_match['HomeTeam'] == home_team:
+                    home_goals_scored.append(past_match['FTHG'])
+                    home_goals_conceded.append(past_match['FTAG'])
                 else:
-                    general_form.append(0)
-            stats[team]['General_Form'] = sum(general_form[-5:]) / min(5, len(general_form))
+                    home_goals_scored.append(past_match['FTAG'])
+                    home_goals_conceded.append(past_match['FTHG'])
+            
+            stats['Home_Goals_Scored_Avg'] = np.mean(home_goals_scored)
+            stats['Home_Goals_Conceded_Avg'] = np.mean(home_goals_conceded)
+            stats['Home_Form'] = self._calculate_form(home_past, home_team)
+        else:
+            stats['Home_Goals_Scored_Avg'] = 0
+            stats['Home_Goals_Conceded_Avg'] = 0
+            stats['Home_Form'] = 0
+        
+        # Away team stats
+        if len(away_past) > 0:
+            away_goals_scored = []
+            away_goals_conceded = []
+            for _, past_match in away_past.iterrows():
+                if past_match['HomeTeam'] == away_team:
+                    away_goals_scored.append(past_match['FTHG'])
+                    away_goals_conceded.append(past_match['FTAG'])
+                else:
+                    away_goals_scored.append(past_match['FTAG'])
+                    away_goals_conceded.append(past_match['FTHG'])
+            
+            stats['Away_Goals_Scored_Avg'] = np.mean(away_goals_scored)
+            stats['Away_Goals_Conceded_Avg'] = np.mean(away_goals_conceded)
+            stats['Away_Form'] = self._calculate_form(away_past, away_team)
+        else:
+            stats['Away_Goals_Scored_Avg'] = 0
+            stats['Away_Goals_Conceded_Avg'] = 0
+            stats['Away_Form'] = 0
         
         return stats
 
-    def _calculate_form(self, matches, team_type, window=5):
-        """Calculate form for a team based on their recent match results.
+    def _calculate_h2h_stats(self, match, past_matches):
+        """Calculate head-to-head statistics using only past matches."""
+        home_team = match['HomeTeam']
+        away_team = match['AwayTeam']
+        match_date = match['Date']
         
-        Args:
-            matches (pd.DataFrame): DataFrame containing the team's matches
-            team_type (str): Either 'HomeTeam' or 'AwayTeam'
-            window (int): Number of matches to consider for form calculation
+        h2h_matches = past_matches[
+            ((past_matches['HomeTeam'] == home_team) & (past_matches['AwayTeam'] == away_team)) |
+            ((past_matches['HomeTeam'] == away_team) & (past_matches['AwayTeam'] == home_team))
+        ]
+        
+        # Validate no future matches in h2h data
+        self._validate_no_leakage(match_date, h2h_matches, "head-to-head calculation")
+        
+        if len(h2h_matches) > 0:
+            home_wins = len(h2h_matches[h2h_matches['FTR'] == 'H'])
+            draws = len(h2h_matches[h2h_matches['FTR'] == 'D'])
+            away_wins = len(h2h_matches[h2h_matches['FTR'] == 'A'])
+            total_matches = len(h2h_matches)
             
-        Returns:
-            pd.Series: Form values for each match
-        """
+            return {
+                'home_win_rate': home_wins / total_matches,
+                'draw_rate': draws / total_matches,
+                'away_win_rate': away_wins / total_matches,
+                'home_goals': h2h_matches['FTHG'].mean(),
+                'away_goals': h2h_matches['FTAG'].mean(),
+                'total_goals': (h2h_matches['FTHG'] + h2h_matches['FTAG']).mean()
+            }
+        else:
+            return {
+                'home_win_rate': 1/3,
+                'draw_rate': 1/3,
+                'away_win_rate': 1/3,
+                'home_goals': 0,
+                'away_goals': 0,
+                'total_goals': 0
+            }
+
+    def _calculate_market_features(self, match):
+        """Calculate betting market features."""
+        features = {}
+        
+        # Basic implied probabilities
+        features['Home_ImpliedProb'] = 1 / match['B365H']
+        features['Draw_ImpliedProb'] = 1 / match['B365D']
+        features['Away_ImpliedProb'] = 1 / match['B365A']
+        
+        # Market overround and confidence
+        features['Market_Overround'] = sum([
+            features['Home_ImpliedProb'],
+            features['Draw_ImpliedProb'],
+            features['Away_ImpliedProb']
+        ])
+        
+        features['Market_Confidence'] = max([
+            features['Home_ImpliedProb'],
+            features['Draw_ImpliedProb'],
+            features['Away_ImpliedProb']
+        ])
+        
+        # Value bets
+        features['Home_Value'] = features['Home_ImpliedProb'] < 1/match['B365H']
+        features['Draw_Value'] = features['Draw_ImpliedProb'] < 1/match['B365D']
+        features['Away_Value'] = features['Away_ImpliedProb'] < 1/match['B365A']
+        
+        # Favorite status
+        features['Home_Is_Favorite'] = features['Home_ImpliedProb'] == features['Market_Confidence']
+        
+        return features
+
+    def _calculate_corner_stats(self, match, past_matches):
+        """Calculate corner statistics using only past matches."""
+        home_team = match['HomeTeam']
+        away_team = match['AwayTeam']
+        match_date = match['Date']
+        
+        home_past = past_matches[past_matches['HomeTeam'] == home_team]
+        away_past = past_matches[past_matches['AwayTeam'] == away_team]
+        
+        # Validate no future matches
+        self._validate_no_leakage(match_date, home_past, "home corner stats calculation")
+        self._validate_no_leakage(match_date, away_past, "away corner stats calculation")
+        
+        stats = {}
+        
+        if len(home_past) > 0:
+            stats['Home_Corners_For_Avg'] = home_past['HC'].mean()
+            stats['Home_Corners_Against_Avg'] = home_past['AC'].mean()
+            
+            # Recent performance
+            for window in [3, 5]:
+                stats[f'Home_Corners_For_Last{window}'] = home_past['HC'].tail(window).mean()
+                stats[f'Home_Corners_Against_Last{window}'] = home_past['AC'].tail(window).mean()
+        else:
+            stats['Home_Corners_For_Avg'] = 0
+            stats['Home_Corners_Against_Avg'] = 0
+            for window in [3, 5]:
+                stats[f'Home_Corners_For_Last{window}'] = 0
+                stats[f'Home_Corners_Against_Last{window}'] = 0
+        
+        if len(away_past) > 0:
+            stats['Away_Corners_For_Avg'] = away_past['AC'].mean()
+            stats['Away_Corners_Against_Avg'] = away_past['HC'].mean()
+            
+            for window in [3, 5]:
+                stats[f'Away_Corners_For_Last{window}'] = away_past['AC'].tail(window).mean()
+                stats[f'Away_Corners_Against_Last{window}'] = away_past['HC'].tail(window).mean()
+        else:
+            stats['Away_Corners_For_Avg'] = 0
+            stats['Away_Corners_Against_Avg'] = 0
+            for window in [3, 5]:
+                stats[f'Away_Corners_For_Last{window}'] = 0
+                stats[f'Away_Corners_Against_Last{window}'] = 0
+        
+        return stats
+
+    def _calculate_card_stats(self, match, past_matches):
+        """Calculate card statistics using only past matches."""
+        home_team = match['HomeTeam']
+        away_team = match['AwayTeam']
+        match_date = match['Date']
+        
+        home_past = past_matches[past_matches['HomeTeam'] == home_team]
+        away_past = past_matches[past_matches['AwayTeam'] == away_team]
+        
+        # Validate no future matches
+        self._validate_no_leakage(match_date, home_past, "home card stats calculation")
+        self._validate_no_leakage(match_date, away_past, "away card stats calculation")
+        
+        stats = {}
+        
+        if len(home_past) > 0:
+            stats['Home_Cards_Avg'] = home_past['HY'].mean()
+            for window in [3, 5]:
+                stats[f'Home_Cards_Last{window}'] = home_past['HY'].tail(window).mean()
+        else:
+            stats['Home_Cards_Avg'] = 0
+            for window in [3, 5]:
+                stats[f'Home_Cards_Last{window}'] = 0
+        
+        if len(away_past) > 0:
+            stats['Away_Cards_Avg'] = away_past['AY'].mean()
+            for window in [3, 5]:
+                stats[f'Away_Cards_Last{window}'] = away_past['AY'].tail(window).mean()
+        else:
+            stats['Away_Cards_Avg'] = 0
+            for window in [3, 5]:
+                stats[f'Away_Cards_Last{window}'] = 0
+        
+        return stats
+
+    def _calculate_form(self, matches, team, window=5):
+        """Calculate team's form based on recent results."""
         if len(matches) == 0:
-            return pd.Series([0])
+            return 0
+        
+        recent_matches = matches.tail(window)
+        points = []
+        
+        for _, match in recent_matches.iterrows():
+            if match['HomeTeam'] == team:
+                points.append(3 if match['FTR'] == 'H' else 1 if match['FTR'] == 'D' else 0)
+            else:
+                points.append(3 if match['FTR'] == 'A' else 1 if match['FTR'] == 'D' else 0)
+        
+        return sum(points) / len(points) if points else 0
+
+    def _set_default_values(self, df, idx):
+        """Set default values for first matches with no history."""
+        df.loc[idx, [
+            'Home_League_Position', 'Away_League_Position',
+            'Home_Points', 'Away_Points',
+            'Position_Diff', 'Points_Diff',
+            'Home_Goals_Scored_Avg', 'Home_Goals_Conceded_Avg',
+            'Away_Goals_Scored_Avg', 'Away_Goals_Conceded_Avg',
+            'Home_Form', 'Away_Form',
+            'Home_Clean_Sheets', 'Away_Clean_Sheets',
+            'Home_Failed_Score', 'Away_Failed_Score',
+            'Goals_Diff_Home', 'Goals_Diff_Away',
+            'Home_Win_Rate', 'Away_Win_Rate',
+            'General_Form'
+        ]] = 0
+        
+        df.loc[idx, [
+            'h2h_home_win_rate', 'h2h_draw_rate', 'h2h_away_win_rate'
+        ]] = 1/3
+        
+        if self.config.use_corner_features:
+            df.loc[idx, [col for col in df.columns if 'Corner' in col]] = 0
+        
+        if self.config.use_card_features:
+            df.loc[idx, [col for col in df.columns if 'Card' in col]] = 0
             
-        # Sort matches by date to ensure chronological order
-        matches = matches.sort_values('Date')
+        # Original odds are already set in create_features
+
+    def _calculate_additional_stats(self, match, past_matches):
+        """Calculate additional performance statistics."""
+        home_team = match['HomeTeam']
+        away_team = match['AwayTeam']
         
-        # Calculate points for each match
-        if team_type == 'HomeTeam':
-            points = matches['FTR'].map({'H': 3, 'D': 1, 'A': 0})
-        else:  # AwayTeam
-            points = matches['FTR'].map({'A': 3, 'D': 1, 'H': 0})
+        # Get team's previous matches
+        home_past = past_matches[
+            (past_matches['HomeTeam'] == home_team) | 
+            (past_matches['AwayTeam'] == home_team)
+        ].sort_values('Date')
         
-        # Calculate rolling average of points
-        form = points.rolling(window=window, min_periods=1).mean()
+        away_past = past_matches[
+            (past_matches['HomeTeam'] == away_team) | 
+            (past_matches['AwayTeam'] == away_team)
+        ].sort_values('Date')
         
-        # Normalize form to be between 0 and 1
-        form = form / 3
+        stats = {}
         
-        return form
+        # Clean sheets and failed to score
+        if len(home_past) > 0:
+            home_clean_sheets = 0
+            home_failed_score = 0
+            for _, past_match in home_past.iterrows():
+                if past_match['HomeTeam'] == home_team:
+                    if past_match['FTAG'] == 0:
+                        home_clean_sheets += 1
+                    if past_match['FTHG'] == 0:
+                        home_failed_score += 1
+                else:
+                    if past_match['FTHG'] == 0:
+                        home_clean_sheets += 1
+                    if past_match['FTAG'] == 0:
+                        home_failed_score += 1
+            
+            stats['Home_Clean_Sheets'] = home_clean_sheets / len(home_past)
+            stats['Home_Failed_Score'] = home_failed_score / len(home_past)
+            
+            # Goal differences
+            home_goals_diff = []
+            for _, past_match in home_past.iterrows():
+                if past_match['HomeTeam'] == home_team:
+                    home_goals_diff.append(past_match['FTHG'] - past_match['FTAG'])
+                else:
+                    home_goals_diff.append(past_match['FTAG'] - past_match['FTHG'])
+            stats['Goals_Diff_Home'] = np.mean(home_goals_diff)
+            
+            # Win rates
+            home_wins = len(home_past[
+                ((home_past['HomeTeam'] == home_team) & (home_past['FTR'] == 'H')) |
+                ((home_past['AwayTeam'] == home_team) & (home_past['FTR'] == 'A'))
+            ])
+            stats['Home_Win_Rate'] = home_wins / len(home_past)
+        else:
+            stats['Home_Clean_Sheets'] = 0
+            stats['Home_Failed_Score'] = 0
+            stats['Goals_Diff_Home'] = 0
+            stats['Home_Win_Rate'] = 0
+        
+        # Away team stats
+        if len(away_past) > 0:
+            away_clean_sheets = 0
+            away_failed_score = 0
+            for _, past_match in away_past.iterrows():
+                if past_match['HomeTeam'] == away_team:
+                    if past_match['FTAG'] == 0:
+                        away_clean_sheets += 1
+                    if past_match['FTHG'] == 0:
+                        away_failed_score += 1
+                else:
+                    if past_match['FTHG'] == 0:
+                        away_clean_sheets += 1
+                    if past_match['FTAG'] == 0:
+                        away_failed_score += 1
+            
+            stats['Away_Clean_Sheets'] = away_clean_sheets / len(away_past)
+            stats['Away_Failed_Score'] = away_failed_score / len(away_past)
+            
+            # Goal differences
+            away_goals_diff = []
+            for _, past_match in away_past.iterrows():
+                if past_match['HomeTeam'] == away_team:
+                    away_goals_diff.append(past_match['FTHG'] - past_match['FTAG'])
+                else:
+                    away_goals_diff.append(past_match['FTAG'] - past_match['FTHG'])
+            stats['Goals_Diff_Away'] = np.mean(away_goals_diff)
+            
+            # Win rates
+            away_wins = len(away_past[
+                ((away_past['HomeTeam'] == away_team) & (away_past['FTR'] == 'H')) |
+                ((away_past['AwayTeam'] == away_team) & (away_past['FTR'] == 'A'))
+            ])
+            stats['Away_Win_Rate'] = away_wins / len(away_past)
+        else:
+            stats['Away_Clean_Sheets'] = 0
+            stats['Away_Failed_Score'] = 0
+            stats['Goals_Diff_Away'] = 0
+            stats['Away_Win_Rate'] = 0
+        
+        # General form (combined win rate of both teams)
+        stats['General_Form'] = (stats['Home_Win_Rate'] + stats['Away_Win_Rate']) / 2
+        
+        return stats
