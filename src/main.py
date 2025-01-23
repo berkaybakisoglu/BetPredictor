@@ -8,6 +8,7 @@ from src.config.config import Config, DataConfig, FeatureConfig, ModelConfig, Be
 from src.data.loader import DataLoader
 from src.features.engineer import FeatureEngineer
 from src.models.predictor import UnifiedPredictor
+from src.models.ensemble_predictor import EnsemblePredictor
 from src.evaluation.evaluator import BettingEvaluator
 
 def setup_logging(output_dir: Path) -> None:
@@ -73,17 +74,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--test-mode',
         action='store_true',
-        help='Run in test mode with reduced dataset (last 2 seasons only)'
+        help='Run in test mode with reduced dataset'
     )
     
     parser.add_argument(
-        '--test-size',
-        type=float,
-        default=0.2,
-        help='Fraction of data to use in test mode (default: 0.2, i.e., 20%% of the data)'
+        '--predictor',
+        type=str,
+        choices=['unified', 'ensemble', 'both'],
+        default='both',
+        help='Which predictor to use (default: both)'
     )
     
     return parser.parse_args()
+
+def run_predictor(predictor_name: str, predictor, config: Config, train_data: pd.DataFrame, 
+                 test_data: pd.DataFrame, args) -> None:
+    """Run a single predictor through training and evaluation."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"\n{'='*20} Running {predictor_name} Predictor {'='*20}")
+    
+    if args.train:
+        # Train models
+        logger.info("Training models...")
+        metrics = predictor.train(train_data, save_path=config.models_dir / predictor_name, 
+                                test_mode=args.test_mode)
+        logger.info(f"{predictor_name} Training metrics: %s", metrics)
+    else:
+        # Load existing models
+        logger.info("Loading existing models...")
+        predictor.load_models(config.models_dir / predictor_name)
+    
+    if args.evaluate:
+        # Make predictions on test set
+        logger.info("Making predictions...")
+        predictions = predictor.predict(test_data)
+        
+        # Evaluate performance
+        logger.info("Evaluating performance...")
+        evaluator = BettingEvaluator(config.betting)
+        metrics = evaluator.evaluate_predictions(predictions, test_data)
+        logger.info(f"{predictor_name} Evaluation metrics: %s", metrics)
+        
+        # Plot results
+        logger.info("Plotting results...")
+        evaluator.plot_performance(save_path=config.output_dir / f"performance_{predictor_name}")
 
 def main() -> None:
     """Main function to run the betting prediction system."""
@@ -107,8 +141,6 @@ def main() -> None:
         # Initialize components
         data_loader = DataLoader(config.data)
         feature_engineer = FeatureEngineer(config.features)
-        predictor = UnifiedPredictor(config.model)
-        evaluator = BettingEvaluator(config.betting)
         
         # Load and preprocess data
         logger.info("Loading data...")
@@ -116,56 +148,26 @@ def main() -> None:
         
         if args.test_mode:
             logger.info("Running in test mode with reduced dataset...")
-            # Get unique seasons
             seasons = sorted(train_data['Season'].unique())
-            
             if len(seasons) > 2:
-                # Use only the last 2 seasons for test mode
                 test_seasons = seasons[-2:]
                 logger.info(f"Using only seasons: {test_seasons}")
-                
-                # Filter data for test seasons
                 train_data = train_data[train_data['Season'].isin(test_seasons)]
                 test_data = test_data[test_data['Season'] >= test_seasons[0]]
-                
-                # Further reduce data size if specified
-                if args.test_size < 1.0:
-                    train_size = int(len(train_data) * args.test_size)
-                    test_size = int(len(test_data) * args.test_size)
-                    
-                    train_data = train_data.sample(n=train_size, random_state=42)
-                    test_data = test_data.sample(n=test_size, random_state=42)
-                    
-                    logger.info(f"Reduced dataset size - Train: {len(train_data)}, Test: {len(test_data)}")
         
         # Create features
         logger.info("Engineering features...")
         train_data = feature_engineer.create_features(train_data, is_training=True)
         test_data = feature_engineer.create_features(test_data, is_training=False)
         
-        if args.train:
-            # Train models
-            logger.info("Training models...")
-            metrics = predictor.train(train_data, save_path=config.models_dir, test_mode=args.test_mode)
-            logger.info("Training metrics: %s", metrics)
-        else:
-            # Load existing models
-            logger.info("Loading existing models...")
-            predictor.load_models(config.models_dir)
+        # Run selected predictor(s)
+        if args.predictor in ['unified', 'both']:
+            unified_predictor = UnifiedPredictor(config.model)
+            run_predictor('unified', unified_predictor, config, train_data, test_data, args)
         
-        if args.evaluate:
-            # Make predictions on test set
-            logger.info("Making predictions...")
-            predictions = predictor.predict(test_data)
-            
-            # Evaluate performance
-            logger.info("Evaluating performance...")
-            metrics = evaluator.evaluate_predictions(predictions, test_data)
-            logger.info("Evaluation metrics: %s", metrics)
-            
-            # Plot results
-            logger.info("Plotting results...")
-            evaluator.plot_performance(save_path=config.output_dir)
+        if args.predictor in ['ensemble', 'both']:
+            ensemble_predictor = EnsemblePredictor(config.model)
+            run_predictor('ensemble', ensemble_predictor, config, train_data, test_data, args)
     
     except Exception as e:
         logger.error("An error occurred: %s", str(e), exc_info=True)
