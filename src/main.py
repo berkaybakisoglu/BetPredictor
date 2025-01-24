@@ -166,6 +166,7 @@ def train_and_evaluate(
     config: Config,
     args: argparse.Namespace,
     logger: logging.Logger,
+    evaluator: BettingEvaluator,
     league: str = None
 ) -> dict:
     """Train and evaluate a predictor.
@@ -178,6 +179,7 @@ def train_and_evaluate(
         config: Configuration
         args: Command line arguments
         logger: Logger instance
+        evaluator: BettingEvaluator instance
         league: Optional league name for per-league training
         
     Returns:
@@ -194,8 +196,7 @@ def train_and_evaluate(
         metrics = predictor.train(
             train_data, 
             save_path=model_dir,
-            test_mode=args.test_mode,
-            min_samples=args.min_samples
+            test_mode=args.test_mode
         )
         logger.info(f"{predictor_name} training metrics: %s", metrics)
     else:
@@ -313,6 +314,7 @@ def main() -> None:
                         config,
                         args,
                         logger,
+                        evaluator,
                         league
                     )
                     if metrics:
@@ -334,7 +336,8 @@ def main() -> None:
                     test_data,
                     config,
                     args,
-                    logger
+                    logger,
+                    evaluator
                 )
                 if metrics:
                     all_metrics[predictor_name] = metrics

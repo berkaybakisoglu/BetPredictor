@@ -24,12 +24,24 @@ class UnifiedPredictor:
     def _define_feature_sets(self) -> Dict[str, List[str]]:
         """Define feature sets for each market."""
         base_features = [
+            # Team Performance
             'Home_Goals_Scored_Avg', 'Home_Goals_Conceded_Avg',
             'Away_Goals_Scored_Avg', 'Away_Goals_Conceded_Avg',
             'Home_Form', 'Away_Form',
+            
+            # Head to Head
             'H2H_Home_Wins', 'H2H_Away_Wins', 'H2H_Draws',
-            'H2H_Avg_Goals', 'Home_ImpliedProb', 'Draw_ImpliedProb',
-            'Away_ImpliedProb'
+            'H2H_Avg_Goals',
+            
+            # Market Features
+            'Home_ImpliedProb', 'Draw_ImpliedProb', 'Away_ImpliedProb',
+            
+            # Standings Features
+            'Home_Position', 'Away_Position',
+            'Home_Points', 'Away_Points',
+            'Home_WinRatio', 'Away_WinRatio',
+            'Home_GoalDiff', 'Away_GoalDiff',
+            'Position_Diff', 'Points_Diff'
         ]
         
         corner_features = [
