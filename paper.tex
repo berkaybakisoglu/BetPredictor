@@ -1,0 +1,445 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,fit}
+
+\begin{document}
+
+\title{A Machine Learning Approach for Football Match Prediction Using Comprehensive Feature Engineering\\
+\large{Technical Paper}}
+
+\author{\IEEEauthorblockN{Berkay Bakisoglu}
+\IEEEauthorblockA{Department of Computer Engineering\\
+Ege University\\
+Izmir, Turkey\\
+Email: 91230000563@ogrenci.ege.edu.tr}}
+
+\maketitle
+
+\begin{abstract}
+In this paper, we explore the development of a machine learning-based match prediction system for football. Our primary goal is to create an accurate prediction system that can effectively forecast match outcomes across different leagues. We propose a comprehensive approach that combines feature engineering with various machine learning models, processing extensive historical match data (2010-2024) with particular attention to team performance patterns and historical statistics. While this is a preliminary report, our initial analysis suggests promising directions not only for accurate match prediction but also for potential applications in betting markets. We discuss our methodology, current progress, and planned experiments for validating our approach.
+\end{abstract}
+
+\section{Introduction}
+Football match prediction presents a complex challenge for machine learning applications. Despite the abundance of historical match data and statistics, accurately predicting match outcomes remains difficult due to the numerous variables involved and the dynamic nature of team performance. Our research began with the goal of developing a reliable match prediction system that can effectively process historical data and identify patterns in team performance. Beyond the primary goal of accurate prediction, we also aim to explore whether such a system could be effectively applied in betting scenarios.
+
+\subsection{Problem Statement and Methods}
+Through our research, we identified several key challenges in football match prediction:
+\begin{itemize}
+\item Extracting meaningful patterns from complex match statistics and historical data
+\item Developing models that can adapt to changing team performance and form
+\item Creating effective evaluation methods that consider both prediction accuracy and consistency
+\item Exploring the practical applications of accurate predictions in betting contexts
+\end{itemize}
+
+Our approach utilizes various machine learning methods including:
+\begin{itemize}
+\item Random Forest classifiers for match outcome prediction
+\item XGBoost regression for continuous variable prediction (corners, cards)
+\item Deep Neural Networks in our hybrid approach
+\item Ensemble methods for combining multiple predictors
+\end{itemize}
+
+These methods were chosen based on their proven effectiveness in similar prediction tasks and their ability to handle the complex, non-linear relationships present in football match data.
+
+\subsection{Research Objectives}
+Our research has two main goals:
+
+\subsubsection{Primary Objectives}
+\begin{itemize}
+\item Development of an accurate match prediction system for multiple leagues
+\item Implementation of comprehensive feature engineering focusing on team performance metrics
+\item Creation of robust evaluation metrics for prediction accuracy
+\item Analysis of different machine learning approaches for match prediction
+\end{itemize}
+
+\subsubsection{Secondary Objectives}
+\begin{itemize}
+\item Evaluation of prediction system's applicability to betting scenarios
+\item Analysis of prediction confidence in relation to betting decisions
+\item Investigation of system performance in different betting markets
+\end{itemize}
+
+\section{Previous Works}
+Sports betting prediction using machine learning has gained significant attention in recent years. Terawong \& Cliff (2024) demonstrated the effectiveness of XGBoost in learning profitable betting strategies through an agent-based model of a sports betting exchange. Their work showed that machine learning models could learn strategies that outperform traditional betting approaches, achieving an overall accuracy of 88\%.
+
+Bunker \& Thabtah (2017) proposed a structured framework for sports result prediction (SRP-CRISP-DM) that emphasizes the importance of proper data preprocessing and feature engineering. Their framework distinguishes between match-related and external features, and advocates for preserving temporal order in model evaluation.
+
+These works highlight two key aspects in sports betting prediction: the importance of sophisticated machine learning approaches and the need for proper data handling and evaluation methodologies. Our work builds upon these foundations while introducing several novel elements:
+
+\begin{itemize}
+    \item A hierarchical prediction system that leverages correlations between different betting markets
+    \item Enhanced feature engineering incorporating both historical statistics and market-derived probabilities
+    \item A comprehensive evaluation framework that considers both prediction accuracy and betting profitability
+\end{itemize}
+
+\section{Proposed Method}
+This section presents our approach to football match prediction, which combines standardized feature engineering with two distinct model architectures. The methodology is structured to enable fair comparison between different prediction approaches while maintaining architectural innovation.
+
+\subsection{Feature Engineering}
+Our feature engineering pipeline is implemented through a dedicated FeatureEngineer class that creates standardized features across all predictors:
+
+\subsubsection{Team Performance Features}
+\begin{itemize}
+\item Historical performance metrics (goals scored/conceded averages)
+\item Recent form indicators
+\item Head-to-head statistics
+\item Team-specific performance trends
+\end{itemize}
+
+\subsubsection{Market Features}
+\begin{itemize}
+\item Betting odds from Bet365
+\item Implied probabilities for match outcomes
+\item Over/Under market indicators
+\item Market efficiency metrics
+\end{itemize}
+
+\subsection{Prediction Systems}
+We implement and compare two distinct architectural approaches:
+
+\subsubsection{Unified Predictor}
+A straightforward approach using Random Forest models:
+\begin{itemize}
+\item Separate classifiers for match outcomes and over/under markets
+\item Regression models for corners and cards predictions
+\item Standardized feature scaling for all models
+\item Configurable hyperparameters including:
+    \begin{itemize}
+    \item 200 estimators per forest
+    \item Maximum depth of 15
+    \item Minimum samples split of 10
+    \item Minimum samples leaf of 5
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Hybrid Predictor}
+An advanced approach combining deep learning with ensemble methods:
+\begin{itemize}
+\item Neural networks for complex pattern recognition
+\item Ensemble models for robust predictions
+\item Market-specific model architectures
+\item Early stopping for optimal training
+\end{itemize}
+
+\subsection{Betting Strategy}
+Our system employs the Kelly Criterion for optimal bankroll management, which is crucial for maximizing long-term growth while managing risk:
+
+\subsubsection{Kelly Criterion Implementation}
+\begin{itemize}
+\item \textbf{Bet Sizing}: The fraction $f$ of bankroll to bet is calculated as:
+    \[ f = \frac{bp - q}{b} \]
+    where:
+    \begin{itemize}
+    \item $b$ is the decimal odds minus 1
+    \item $p$ is our predicted probability of winning
+    \item $q = 1-p$ is the probability of losing
+    \end{itemize}
+\item \textbf{Risk Management}:
+    \begin{itemize}
+    \item Implementation of fractional Kelly (0.5) to reduce volatility
+    \item Maximum bet size limit of 5\% of bankroll
+    \item Minimum confidence threshold for bet placement
+    \end{itemize}
+\item \textbf{Market Adjustments}:
+    \begin{itemize}
+    \item Different confidence thresholds for each market
+    \item Market-specific maximum bet sizes
+    \item Consideration of market liquidity and efficiency
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Betting Decision Framework}
+The system integrates prediction confidence with Kelly Criterion:
+\begin{itemize}
+\item Bets are only placed when:
+    \begin{itemize}
+    \item Model confidence exceeds market threshold
+    \item Kelly fraction is positive and significant
+    \item Odds provide sufficient value vs. predicted probability
+    \end{itemize}
+\item Position sizing varies based on:
+    \begin{itemize}
+    \item Prediction confidence level
+    \item Market odds discrepancy
+    \item Historical model performance in similar scenarios
+    \end{itemize}
+\end{itemize}
+
+\subsection{Training Methodology}
+Our training process incorporates several key components:
+
+\subsubsection{Data Splitting}
+\begin{itemize}
+\item Time-series based validation preserving temporal order
+\item Minimum 3 seasons required for full training
+\item Last season reserved for testing
+\item Support for league-specific training
+\end{itemize}
+
+\subsubsection{Test Mode Features}
+For rapid prototyping and development:
+\begin{itemize}
+\item Option to use reduced dataset size
+\item Configurable test size parameter (default 20\%)
+\item Minimum 2 seasons required in test mode
+\item Random sampling with fixed seed for reproducibility
+\end{itemize}
+
+\section{Experimental Studies}
+\subsection{Implementation Details}
+The system is implemented as a modular Python application with the following components:
+
+\subsubsection{Core Components}
+\begin{itemize}
+\item \textbf{DataLoader}: Handles data acquisition and preprocessing
+\item \textbf{FeatureEngineer}: Manages feature creation and transformation
+\item \textbf{Predictors}: Implements prediction models
+\item \textbf{BettingEvaluator}: Handles performance evaluation
+\end{itemize}
+
+\subsubsection{Configuration System}
+Flexible configuration management through:
+\begin{itemize}
+\item \textbf{DataConfig}: Data loading parameters
+\item \textbf{FeatureConfig}: Feature engineering settings
+\item \textbf{ModelConfig}: Model hyperparameters
+\item \textbf{BettingConfig}: Evaluation parameters
+\end{itemize}
+
+\subsection{Experimental Framework}
+Our experiments are controlled through command-line arguments:
+
+\subsubsection{Training Options}
+\begin{itemize}
+\item Model selection (unified, hybrid, or comparison)
+\item Training mode activation
+\item Evaluation mode activation
+\item Test mode for rapid prototyping
+\end{itemize}
+
+\subsubsection{Data Management}
+\begin{itemize}
+\item Configurable data directory paths
+\item Model storage locations
+\item Output directory for results
+\item League-specific processing option
+\end{itemize}
+
+\subsection{Performance Evaluation}
+Comprehensive evaluation through the BettingEvaluator:
+
+\subsubsection{Prediction Metrics}
+\begin{itemize}
+\item Classification metrics for match outcomes
+\item Regression metrics for count predictions
+\item Market-specific performance analysis
+\end{itemize}
+
+\subsubsection{Visualization}
+\begin{itemize}
+\item Comparative performance plots
+\item League-specific analysis
+\item Model comparison visualizations
+\end{itemize}
+
+\section{Results and Discussion}
+\subsection{Model Performance}
+Our experimental results demonstrate varying levels of success across different prediction markets:
+
+\subsubsection{Match Result Predictions}
+The hybrid predictor achieved notable performance in match result predictions:
+\begin{itemize}
+\item Prediction accuracy: 70.14\%
+\item Win rate on placed bets: 95.63\%
+\item Return on Investment (ROI): 184.21\%
+\item Total profit/loss: +15,178.80 units
+\item Maximum drawdown: 40.0 units
+\end{itemize}
+
+\subsubsection{Over/Under Market}
+Performance in the over/under 2.5 goals market showed moderate success:
+\begin{itemize}
+\item Prediction accuracy: 53.55\%
+\item Win rate on placed bets: 60.59\%
+\item ROI: 5.25\%
+\item Total profit/loss: +211.55 units
+\item Maximum drawdown: 193.01 units
+\end{itemize}
+
+\subsubsection{Auxiliary Markets}
+The system also demonstrated capability in predicting auxiliary markets:
+
+\textbf{Cards Predictions:}
+\begin{itemize}
+\item Mean Absolute Error: 1.88 cards
+\item Root Mean Square Error: 2.41 cards
+\item Prediction within ±1 card: 34.39\%
+\item Prediction within ±2 cards: 64.01\%
+\item Prediction within ±3 cards: 81.09\%
+\end{itemize}
+
+\textbf{Corners Predictions:}
+\begin{itemize}
+\item Mean Absolute Error: 3.10 corners
+\item Root Mean Square Error: 3.94 corners
+\item Prediction within ±1 corner: 21.18\%
+\item Prediction within ±2 corners: 41.05\%
+\item Prediction within ±3 corners: 57.74\%
+\end{itemize}
+
+\subsection{Model Confidence Analysis}
+Our analysis shows a strong correlation between model confidence and prediction accuracy:
+
+\begin{itemize}
+\item Match result predictions show highest confidence (average 0.96 for successful bets)
+\item Over/Under predictions demonstrate moderate confidence levels
+\item Corner and card predictions show varying confidence levels, with higher accuracy in card predictions
+\end{itemize}
+
+\subsection{Hybrid vs Unified Predictor Comparison}
+A direct comparison between the two architectural approaches reveals interesting performance differences:
+
+\subsubsection{Match Result Market}
+\begin{itemize}
+\item \textbf{Prediction Accuracy:}
+    \begin{itemize}
+    \item Hybrid: 70.14\%
+    \item Unified: 68.79\%
+    \end{itemize}
+\item \textbf{Betting Performance:}
+    \begin{itemize}
+    \item Hybrid: 95.63\% win rate, 184.21\% ROI, 412 bets
+    \item Unified: 96.79\% win rate, 180.02\% ROI, 280 bets
+    \end{itemize}
+\item \textbf{Risk Profile:}
+    \begin{itemize}
+    \item Hybrid: 40.0 units max drawdown, more aggressive (412 bets)
+    \item Unified: 20.0 units max drawdown, more conservative (280 bets)
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Over/Under Market}
+\begin{itemize}
+\item \textbf{Prediction Accuracy:}
+    \begin{itemize}
+    \item Hybrid: 53.55\%
+    \item Unified: 56.15\%
+    \end{itemize}
+\item \textbf{Betting Performance:}
+    \begin{itemize}
+    \item Hybrid: 60.59\% win rate, 5.25\% ROI, 203 bets
+    \item Unified: 61.41\% win rate, 8.26\% ROI, 241 bets
+    \end{itemize}
+\item \textbf{Risk Profile:}
+    \begin{itemize}
+    \item Hybrid: 193.01 units max drawdown
+    \item Unified: 198.85 units max drawdown
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Auxiliary Markets Comparison}
+\textbf{Cards Predictions:}
+\begin{itemize}
+\item \textbf{Accuracy Metrics:}
+    \begin{itemize}
+    \item Hybrid: MAE 1.88, RMSE 2.41
+    \item Unified: MAE 1.76, RMSE 2.28
+    \end{itemize}
+\item \textbf{Prediction Range:}
+    \begin{itemize}
+    \item Hybrid: 81.09\% within ±3 cards
+    \item Unified: 83.36\% within ±3 cards
+    \end{itemize}
+\end{itemize}
+
+\textbf{Corners Predictions:}
+\begin{itemize}
+\item \textbf{Accuracy Metrics:}
+    \begin{itemize}
+    \item Hybrid: MAE 3.10, RMSE 3.94
+    \item Unified: MAE 2.83, RMSE 3.58
+    \end{itemize}
+\item \textbf{Prediction Range:}
+    \begin{itemize}
+    \item Hybrid: 57.74\% within ±3 corners
+    \item Unified: 62.37\% within ±3 corners
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Key Comparative Insights}
+\begin{itemize}
+\item The Hybrid predictor shows superior performance in match result prediction accuracy (+1.35\%) but with higher risk exposure
+\item The Unified predictor demonstrates better performance in auxiliary markets, particularly in corners and cards predictions
+\item Both models maintain profitable operations in match result and over/under markets
+\item The Unified predictor shows more conservative bet selection with fewer total bets placed
+\item The Hybrid predictor generates higher absolute profits despite slightly lower win rates in some markets
+\end{itemize}
+
+\subsection{Key Findings}
+Several important observations emerge from our results:
+
+\begin{itemize}
+\item The system shows strongest performance in match result predictions, with both high accuracy and profitable betting outcomes
+\item Over/Under market predictions, while less accurate, still maintain positive ROI
+\item Auxiliary markets (cards and corners) show reasonable accuracy considering the inherent variability in these metrics
+\item The hybrid model demonstrates robust performance across different leagues and seasons
+\end{itemize}
+
+\subsection{Limitations and Challenges}
+Despite the promising results, several limitations were identified:
+
+\begin{itemize}
+\item Higher variance in corner predictions compared to other markets
+\item Moderate accuracy in Over/Under predictions despite positive ROI
+\item Need for larger datasets in some leagues for more robust predictions
+\item Challenge in maintaining consistent performance across different seasons
+\end{itemize}
+
+\section{Conclusion}
+This preliminary report represents our first steps toward developing an effective machine learning approach to football match prediction, with potential applications in betting markets. While we're still early in our research, our initial work has revealed both promising directions and significant challenges.
+
+\subsection{Current Progress}
+We've established some fundamental building blocks:
+\begin{itemize}
+\item A robust approach to processing historical match data
+\item A framework for extracting meaningful performance features
+\item Initial prediction model architectures
+\item A comprehensive evaluation methodology
+\end{itemize}
+
+\subsection{Future Work}
+Our next phase of research will focus on several key areas:
+
+\subsubsection{Model Development}
+\begin{itemize}
+\item Testing and comparing different model architectures
+\item Implementing ensemble methods for improved prediction accuracy
+\item Developing more sophisticated confidence estimation techniques
+\end{itemize}
+
+\subsubsection{Validation and Testing}
+\begin{itemize}
+\item Testing performance using historical betting odds
+\end{itemize}
+
+\subsubsection{Betting Applications}
+\begin{itemize}
+\item Analyzing prediction accuracy in relation to betting profitability
+\end{itemize}
+
+\subsubsection{Research Extensions}
+\begin{itemize}
+\item Expanding our literature review and theoretical foundation
+\item Analyzing prediction performance across different leagues and seasons
+\item Investigating market-specific prediction strategies
+\item Developing real-time prediction capabilities
+\end{itemize}
+
+\end{document} 

@@ -1,308 +1,355 @@
 """Main script for running the betting prediction system."""
 import argparse
-import os
+from pathlib import Path
 import logging
 from datetime import datetime
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import sys
-import traceback
-import pandas as pd
 
-from config.config import Config, DataConfig, FeatureConfig, ModelConfig, BettingConfig
-from data.loader import DataLoader
-from features.engineer import FeatureEngineer
-from models.predictor import UnifiedPredictor
-from models.hierarchical_predictor import HierarchicalPredictor
-from evaluation.evaluator import BettingEvaluator
+from src.config.config import Config, DataConfig, FeatureConfig, ModelConfig, BettingConfig
+from src.data.loader import DataLoader
+from src.features.engineer import FeatureEngineer
+from src.models.predictor import UnifiedPredictor
+from src.models.hybrid_predictor import HybridPredictor
+from src.evaluation.evaluator import BettingEvaluator
 
-def setup_logging(output_dir):
-    """Setup logging configuration."""
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+def setup_logging(output_dir: Path) -> None:
+    """Set up logging configuration.
     
-    log_file = os.path.join(output_dir, 'run_{0}.log'.format(
-        datetime.now().strftime("%Y%m%d_%H%M%S")
-    ))
+    Args:
+        output_dir: Directory to save log file
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file),
+            logging.FileHandler(
+                output_dir / f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+            ),
             logging.StreamHandler()
         ]
     )
 
-def parse_args():
-    """Parse command line arguments."""
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments.
+    
+    Returns:
+        Parsed arguments
+    """
     parser = argparse.ArgumentParser(description='Run betting prediction system')
     
-    parser.add_argument('--data-dir', type=str, default='data/raw_csv')
-    parser.add_argument('--models-dir', type=str, default='models')
-    parser.add_argument('--output-dir', type=str, default='output')
-    parser.add_argument('--train', action='store_true')
-    parser.add_argument('--evaluate', action='store_true')
-    parser.add_argument('--test-mode', action='store_true')
-    parser.add_argument('--test-size', type=float, default=0.2)
-    parser.add_argument('--use-hierarchical', action='store_true', 
-                      help='Use hierarchical predictor instead of unified predictor')
-    parser.add_argument('--compare-models', action='store_true',
-                      help='Compare hierarchical and unified predictors')
+    parser.add_argument(
+        '--data-dir',
+        type=Path,
+        default=Path('data/raw'),
+        help='Directory containing raw data files'
+    )
+    
+    parser.add_argument(
+        '--models-dir',
+        type=Path,
+        default=Path('models'),
+        help='Directory to save/load models'
+    )
+    
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=Path('output'),
+        help='Directory to save outputs'
+    )
+    
+    parser.add_argument(
+        '--train',
+        action='store_true',
+        help='Train new models'
+    )
+    
+    parser.add_argument(
+        '--evaluate',
+        action='store_true',
+        help='Evaluate model performance'
+    )
+    
+    parser.add_argument(
+        '--test-mode',
+        action='store_true',
+        help='Run in test mode with reduced dataset'
+    )
+    
+    parser.add_argument(
+        '--test-size',
+        type=float,
+        default=0.2,
+        help='Fraction of data to use in test mode (default: 0.2, i.e., 20%% of the data)'
+    )
+    
+    parser.add_argument(
+        '--min-samples',
+        type=int,
+        default=1000,
+        help='Minimum number of training samples required (default: 1000)'
+    )
+    
+    parser.add_argument(
+        '--predictor',
+        type=str,
+        choices=['unified', 'hybrid', 'compare'],
+        default='unified',
+        help='Predictor to use (unified, hybrid, or compare both)'
+    )
+    
+    parser.add_argument(
+        '--by-league',
+        action='store_true',
+        help='Train and evaluate models separately for each league'
+    )
     
     return parser.parse_args()
 
-def compare_predictors(train_data, test_data, config, logger):
-    """Compare hierarchical and unified predictors."""
-    logger.info("\nStarting model comparison...")
+def plot_comparison(metrics_unified: dict, metrics_hybrid: dict, save_path: Path) -> None:
+    """Plot comparison of metrics between unified and hybrid predictors.
     
-    unified_predictor = UnifiedPredictor(config.model)
-    hierarchical_predictor = HierarchicalPredictor(config.model)
+    Args:
+        metrics_unified: Metrics from unified predictor
+        metrics_hybrid: Metrics from hybrid predictor
+        save_path: Path to save comparison plots
+    """
+    save_path.mkdir(parents=True, exist_ok=True)
     
-    logger.info("Training Unified Predictor...")
-    unified_results = unified_predictor.train(train_data)
-    
-    logger.info("Training Hierarchical Predictor...")
-    hierarchical_results = hierarchical_predictor.train(train_data)
-    
-    logger.info("Making predictions with both models...")
-    unified_predictions = unified_predictor.predict(test_data)
-    hierarchical_predictions = hierarchical_predictor.predict(test_data)
-    
-    evaluator = BettingEvaluator(config.betting)
-    
-    logger.info("\nEvaluating Unified Predictor:")
-    unified_metrics = evaluator.evaluate(unified_predictions, test_data)
-    
-    logger.info("\nEvaluating Hierarchical Predictor:")
-    hierarchical_metrics = evaluator.evaluate(hierarchical_predictions, test_data)
-    
-    # Save feature importance plots
-    comparison_dir = os.path.join(config.output_dir, 'model_comparison')
-    if not os.path.exists(comparison_dir):
-        os.makedirs(comparison_dir)
-    
-    hierarchical_predictor.plot_feature_importance(
-        os.path.join(comparison_dir, 'hierarchical_features')
-    )
-    
-    # Create comparison visualizations
-    plot_model_comparison(
-        unified_metrics, hierarchical_metrics, 
-        unified_results['metrics'], hierarchical_results['metrics'],
-        comparison_dir
-    )
-    
-    return unified_metrics, hierarchical_metrics
-
-def plot_model_comparison(unified_metrics, hierarchical_metrics, 
-                         unified_training, hierarchical_training, output_dir):
-    """Create visualization comparing model performances."""
-    metrics_data = []
-    
-    # Betting performance metrics
-    for market in unified_metrics.keys():
-        if market == 'bankroll':
+    # For each market, create a comparison plot
+    for market in metrics_unified.keys():
+        if market not in metrics_hybrid:
             continue
-        for metric, value in unified_metrics[market].items():
-            if isinstance(value, float):
-                metrics_data.append({
-                    'Market': market,
-                    'Metric': metric,
-                    'Value': value,
-                    'Model': 'Unified'
-                })
+            
+        # Get metrics for this market
+        unified_metrics = metrics_unified[market]
+        hybrid_metrics = metrics_hybrid[market]
         
-        for metric, value in hierarchical_metrics[market].items():
-            if isinstance(value, float):
-                metrics_data.append({
-                    'Market': market,
-                    'Metric': metric,
-                    'Value': value,
-                    'Model': 'Hierarchical'
-                })
-    
-    df = pd.DataFrame(metrics_data)
-    
-    # Plot betting metrics
-    plt.figure(figsize=(15, 10))
-    
-    for i, market in enumerate(unified_metrics.keys()):
-        if market == 'bankroll':
-            continue
-        plt.subplot(2, 2, i)
-        market_data = df[df['Market'] == market]
+        # Create comparison plot
+        plt.figure(figsize=(10, 6))
+        metrics = list(unified_metrics.keys())
+        x = range(len(metrics))
         
-        sns.barplot(data=market_data, x='Metric', y='Value', hue='Model')
-        plt.title(f'{market} Metrics Comparison')
-        plt.xticks(rotation=45)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'betting_metrics_comparison.png'))
-    plt.close()
-    
-    # Plot bankroll evolution
-    plt.figure(figsize=(12, 6))
-    plt.plot(unified_metrics['bankroll']['balance_history'], 
-             label='Unified', alpha=0.7)
-    plt.plot(hierarchical_metrics['bankroll']['balance_history'], 
-             label='Hierarchical', alpha=0.7)
-    plt.title('Bankroll Evolution')
-    plt.xlabel('Number of Bets')
-    plt.ylabel('Bankroll')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(output_dir, 'bankroll_evolution.png'))
-    plt.close()
-    
-    # Plot training metrics comparison
-    training_data = []
-    for market in unified_training.keys():
-        for metric, value in unified_training[market].items():
-            if isinstance(value, float):
-                training_data.append({
-                    'Market': market,
-                    'Metric': metric,
-                    'Value': value,
-                    'Model': 'Unified'
-                })
+        plt.bar([i - 0.2 for i in x], 
+                [unified_metrics[m] for m in metrics], 
+                width=0.4, 
+                label='Unified',
+                color='blue',
+                alpha=0.6)
+        plt.bar([i + 0.2 for i in x], 
+                [hybrid_metrics[m] for m in metrics], 
+                width=0.4, 
+                label='Hybrid',
+                color='red',
+                alpha=0.6)
         
-        for metric, value in hierarchical_training[market].items():
-            if isinstance(value, float):
-                training_data.append({
-                    'Market': market,
-                    'Metric': metric,
-                    'Value': value,
-                    'Model': 'Hierarchical'
-                })
-    
-    training_df = pd.DataFrame(training_data)
-    
-    plt.figure(figsize=(12, 6))
-    sns.barplot(data=training_df, x='Market', y='Value', hue='Model')
-    plt.title('Training Metrics Comparison')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'training_metrics_comparison.png'))
-    plt.close()
+        plt.xlabel('Metrics')
+        plt.ylabel('Score')
+        plt.title(f'{market} - Model Comparison')
+        plt.xticks(x, metrics, rotation=45)
+        plt.legend()
+        plt.tight_layout()
+        
+        # Save plot
+        plt.savefig(save_path / f'{market}_comparison.png')
+        plt.close()
 
-def main():
-    """Main function."""
+def train_and_evaluate(
+    predictor_name: str,
+    predictor: UnifiedPredictor | HybridPredictor,
+    train_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+    config: Config,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+    evaluator: BettingEvaluator,
+    league: str = None
+) -> dict:
+    """Train and evaluate a predictor.
+    
+    Args:
+        predictor_name: Name of the predictor
+        predictor: Predictor instance
+        train_data: Training data
+        test_data: Test data
+        config: Configuration
+        args: Command line arguments
+        logger: Logger instance
+        evaluator: BettingEvaluator instance
+        league: Optional league name for per-league training
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    # Set model directory based on league
+    model_dir = config.models_dir / predictor_name
+    if league:
+        model_dir = model_dir / league
+    
+    if args.train:
+        # Train models
+        logger.info("Training models...")
+        metrics = predictor.train(
+            train_data, 
+            save_path=model_dir,
+            test_mode=args.test_mode
+        )
+        logger.info(f"{predictor_name} training metrics: %s", metrics)
+    else:
+        # Load existing models
+        logger.info("Loading existing models...")
+        predictor.load_models(model_dir)
+    
+    if args.evaluate:
+        # Make predictions on test set
+        logger.info("Making predictions...")
+        predictions = predictor.predict(test_data)
+        
+        # Evaluate performance
+        logger.info("Evaluating performance...")
+        metrics = evaluator.evaluate_predictions(predictions, test_data)
+        logger.info(f"{predictor_name} evaluation metrics: %s", metrics)
+        
+        # Plot results
+        output_dir = config.output_dir / predictor_name
+        if league:
+            output_dir = output_dir / league
+        evaluator.plot_performance(save_path=output_dir)
+        
+        return metrics
+    
+    return None
+
+def main() -> None:
+    """Main function to run the betting prediction system."""
     args = parse_args()
     
-    # Create base config
-    config = Config()
+    # Initialize config
+    config = Config(
+        data=DataConfig(data_dir=args.data_dir),
+        features=FeatureConfig(),
+        model=ModelConfig(),
+        betting=BettingConfig(),
+        output_dir=args.output_dir,
+        models_dir=args.models_dir
+    )
     
-    # Only override data_dir if explicitly provided
-    if args.data_dir != 'data/raw_csv/data':  # Only override if different from default
-        config.data.data_dir = args.data_dir
-    
-    # Override other settings
-    config.output_dir = args.output_dir
-    config.models_dir = args.models_dir
-    
+    # Set up logging
     setup_logging(config.output_dir)
     logger = logging.getLogger(__name__)
     
     try:
+        # Initialize components
         data_loader = DataLoader(config.data)
         feature_engineer = FeatureEngineer(config.features)
+        evaluator = BettingEvaluator(config.betting)
         
+        # Initialize predictors based on argument
+        predictors = {}
+        if args.predictor in ['unified', 'compare']:
+            predictors['unified'] = UnifiedPredictor(config.model)
+        if args.predictor in ['hybrid', 'compare']:
+            predictors['hybrid'] = HybridPredictor(config.model)
+        
+        # Load and preprocess data
         logger.info("Loading data...")
-        train_data, test_data = data_loader.load_data(test_mode=args.test_mode)
+        train_data, test_data = data_loader.load_data()
         
+        if args.test_mode:
+            logger.info("Running in test mode with reduced dataset...")
+            # Get unique seasons
+            seasons = sorted(train_data['Season'].unique())
+            
+            if len(seasons) > 2:
+                # Use only the last 2 seasons for test mode
+                test_seasons = seasons[-2:]
+                logger.info(f"Using only seasons: {test_seasons}")
+                
+                # Filter data for test seasons
+                train_data = train_data[train_data['Season'].isin(test_seasons)]
+                test_data = test_data[test_data['Season'] >= test_seasons[0]]
+                
+                # Further reduce data size if specified
+                if args.test_size < 1.0:
+                    train_size = int(len(train_data) * args.test_size)
+                    test_size = int(len(test_data) * args.test_size)
+                    
+                    train_data = train_data.sample(n=train_size, random_state=42)
+                    test_data = test_data.sample(n=test_size, random_state=42)
+                    
+                    logger.info(f"Reduced dataset size - Train: {len(train_data)}, Test: {len(test_data)}")
+        
+        # Create features
         logger.info("Engineering features...")
         train_data = feature_engineer.create_features(train_data, is_training=True)
-        test_data = feature_engineer.create_features(test_data, historical_data=train_data, is_training=False)
+        test_data = feature_engineer.create_features(test_data, is_training=False)
         
-        if args.compare_models:
-            logger.info("Comparing predictors...")
-            unified_metrics, hierarchical_metrics = compare_predictors(
-                train_data, test_data, config, logger
-            )
-            return
+        # Dictionary to store metrics for comparison
+        all_metrics = {}
         
-        predictor = HierarchicalPredictor(config.model) if args.use_hierarchical else UnifiedPredictor(config.model)
-        predictor_name = "Hierarchical" if args.use_hierarchical else "Unified"
-        
-        if args.train:
-            logger.info("Training {0} predictor...".format(predictor_name))
-            training_results = predictor.train(train_data)
+        if args.by_league:
+            # Train and evaluate separately for each league
+            leagues = train_data['League'].unique()
             
-            logger.info("\nTraining metrics:")
-            for market, metrics in training_results['metrics'].items():
-                logger.info(f"\n{market.upper()}:")
-                for metric, value in metrics.items():
-                    logger.info(f"- {metric}: {value:.4f}")
-            
-            # Plot feature importance
-            predictor.plot_feature_importance(
-                os.path.join(config.output_dir, 'feature_importance')
-            )
-            
-            # Save model
-            predictor.save(config.models_dir)
+            for league in leagues:
+                logger.info(f"\nProcessing {league}...")
+                
+                # Filter data for this league
+                league_train = train_data[train_data['League'] == league]
+                league_test = test_data[test_data['League'] == league]
+                
+                logger.info(f"League data size - Train: {len(league_train)}, Test: {len(league_test)}")
+                
+                league_metrics = {}
+                for predictor_name, predictor in predictors.items():
+                    metrics = train_and_evaluate(
+                        predictor_name,
+                        predictor,
+                        league_train,
+                        league_test,
+                        config,
+                        args,
+                        logger,
+                        evaluator,
+                        league
+                    )
+                    if metrics:
+                        league_metrics[predictor_name] = metrics
+                
+                if league_metrics and args.predictor == 'compare':
+                    plot_comparison(
+                        league_metrics['unified'],
+                        league_metrics['hybrid'],
+                        config.output_dir / 'comparison' / league
+                    )
         else:
-            logger.info("Loading existing {0} predictor...".format(predictor_name))
-            predictor.load(config.models_dir)
-        
-        if args.evaluate:
-            logger.info("Making predictions...")
-            predictions = predictor.predict(test_data)
+            # Train and evaluate on all data combined
+            for predictor_name, predictor in predictors.items():
+                metrics = train_and_evaluate(
+                    predictor_name,
+                    predictor,
+                    train_data,
+                    test_data,
+                    config,
+                    args,
+                    logger,
+                    evaluator
+                )
+                if metrics:
+                    all_metrics[predictor_name] = metrics
             
-            logger.info("Evaluating predictions...")
-            evaluator = BettingEvaluator(config.betting)
-            metrics = evaluator.evaluate(predictions, test_data)
-            
-            logger.info("\nEvaluation metrics:")
-            for market, market_metrics in metrics.items():
-                if market == 'bankroll':
-                    logger.info("\nBankroll Metrics:")
-                    logger.info(f"Final Balance: {market_metrics['final_balance']:.2f}")
-                    logger.info(f"Max Drawdown: {market_metrics['max_drawdown']:.2%}")
-                    logger.info(f"Sharpe Ratio: {market_metrics['sharpe_ratio']:.2f}")
-                    logger.info(f"Profit Factor: {market_metrics['profit_factor']:.2f}")
-                    continue
-                    
-                logger.info(f"\n{market.upper()}:")
-                for metric, value in market_metrics.items():
-                    if isinstance(value, dict):
-                        logger.info(f"\n- {metric}:")
-                        for sub_metric, sub_value in value.items():
-                            if isinstance(sub_value, float):
-                                logger.info(f"  - {sub_metric}: {sub_value:.4f}")
-                            else:
-                                logger.info(f"  - {sub_metric}: {sub_value}")
-                    elif isinstance(value, float):
-                        logger.info(f"- {metric}: {value:.4f}")
-                    else:
-                        logger.info(f"- {metric}: {value}")
-            
-            # Create visualizations directory
-            viz_dir = os.path.join(config.output_dir, 'visualizations')
-            os.makedirs(viz_dir, exist_ok=True)
-            
-            # Plot feature importance if available
-            if hasattr(predictor, 'plot_feature_importance'):
-                predictor.plot_feature_importance(viz_dir)
-            
-            logger.info(f"\nVisualizations saved to {viz_dir}")
-            
-            if hasattr(evaluator, 'bet_details') and evaluator.bet_details:
-                bet_history = pd.DataFrame(evaluator.bet_details)
-                visualizer = evaluator.visualizer
-                
-                visualizer.plot_pnl_evolution(bet_history)
-                visualizer.plot_win_rate_by_odds(bet_history)
-                visualizer.plot_roi_by_league(bet_history)
-                visualizer.plot_confidence_analysis(predictions)
-                
-                visualizer.create_summary_report(bet_history, predictions)
-                evaluator.save_bet_details(os.path.join(config.output_dir, 'betting_results'))
-                
-                logger.info("Visualizations saved to {0}/visualizations".format(config.output_dir))
-            else:
-                logger.warning("No betting history available for visualization")
+            # If comparing, create comparison plots
+            if args.predictor == 'compare' and args.evaluate and len(all_metrics) == 2:
+                logger.info("Creating comparison plots...")
+                plot_comparison(
+                    all_metrics['unified'],
+                    all_metrics['hybrid'],
+                    config.output_dir / 'comparison'
+                )
     
     except Exception as e:
         logger.error("An error occurred: %s", str(e), exc_info=True)
