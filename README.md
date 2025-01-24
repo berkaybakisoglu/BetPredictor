@@ -15,43 +15,46 @@ A machine learning system for predicting sports betting outcomes across multiple
 
 ```
 .
-├── data/
-│   └── raw/          # Raw Excel data files
-├── models/           # Trained model files
-├── output/          # Performance plots and logs
+├── data/             # Raw and processed data files
+├── models/           # Model training and prediction scripts
+├── output/           # Performance plots and logs
 ├── src/
-│   ├── config/      # Configuration classes
-│   ├── data/        # Data loading and preprocessing
-│   ├── features/    # Feature engineering
-│   ├── models/      # Model training and prediction
-│   ├── evaluation/  # Performance evaluation
-│   └── main.py      # Main script
+│   ├── analysis/     # Data analysis scripts
+│   ├── config/       # Configuration classes
+│   ├── data/         # Data loading and preprocessing
+│   ├── evaluation/   # Performance evaluation
+│   ├── features/     # Feature engineering
+│   ├── models/       # Model training and prediction
+│   ├── prediction/   # Prediction scripts
+│   ├── utils/        # Utility functions
+│   ├── visualization/ # Visualization scripts
+│   └── main.py       # Main script
 ├── requirements.txt  # Project dependencies
-└── README.md        # This file
+└── README.md         # This file
 ```
 
 ## Installation
 
 1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/betting-predictor.git
-cd betting-predictor
-```
+   ```bash
+   git clone https://github.com/yourusername/betting-predictor.git
+   cd betting-predictor
+   ```
 
 2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 
 3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ## Usage
 
-1. Place your data files in the `data/raw` directory. Files should be Excel format with the following required columns:
+1. Place your data files in the `data/raw` directory. Files should be in Excel format with the following required columns:
    - Date
    - HomeTeam
    - AwayTeam
@@ -70,19 +73,19 @@ pip install -r requirements.txt
    - AY (Away yellow cards)
 
 2. Train models:
-```bash
-python src/main.py --train
-```
+   ```bash
+   python src/main.py --train
+   ```
 
 3. Evaluate performance:
-```bash
-python src/main.py --evaluate
-```
+   ```bash
+   python src/main.py --evaluate
+   ```
 
 4. Train and evaluate:
-```bash
-python src/main.py --train --evaluate
-```
+   ```bash
+   python src/main.py --train --evaluate
+   ```
 
 ## Configuration
 
